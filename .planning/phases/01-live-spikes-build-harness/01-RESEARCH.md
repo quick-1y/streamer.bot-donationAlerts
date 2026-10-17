@@ -608,17 +608,24 @@ Not a rename/refactor/migration phase: omitted. (Spike cleanup S7 covers the onl
 | A11 | `TriggerCodeEvent` called from a pool thread outside any action context works | E4 | Phase 2 dispatcher design changes if it fails |
 | A12 | Closing via the window X (not tray minimize) triggers the normal shutdown path; `minimizeToTrayOnClose` was false in earlier research | S4 | Wrong test; run sheet tells the user to confirm the process actually ends |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Does the 1.0.7 action editor expose an action description (PKG-02)?**
+All five questions are resolved for planning. Q1 and Q3 fix a decision rule now. Which branch applies is read from the live session (findings E8 and F8). Until then those findings stay `not verified`, so nothing here claims live behavior.
+
+1. **Does the 1.0.7 action editor expose an action description (PKG-02)?** RESOLVED (decision rule fixed; outcome observed live as E8)
    - What we know: 1.0.4 action JSON has no `description` key [VERIFIED: sample keys].
    - What's unclear: whether 1.0.7 adds one.
    - Recommendation: golden step 6 and finding E8; fall back to a Comment sub-action.
-2. **Should the golden be extended now with the Phase 6 example item kinds (Send Message, Play Sound, range If/Else)?**
+   - **Resolution:** If the 1.0.7 editor has a Description field and the golden export contains it, Phase 6 (PKG-02) uses it. Otherwise each action's description goes in a Comment sub-action. Carried by: 01-03 Task 1 (RECIPE step 6 asks for the field, step 9 reports yes/no), Task 2 (receives the user's step-9 report) and Task 3 (copies it verbatim into 01-03-SUMMARY "Live observations (golden session)"), 01-06 Task 1 (FINDINGS row E8), and 01-07 Task 3 (E8 status and the Comment sub-action decision rule).
+2. **Should the golden be extended now with the Phase 6 example item kinds (Send Message, Play Sound, range If/Else)?** RESOLVED (adopted as optional)
    - Recommendation: yes if the user is willing, because each later user round-trip is expensive; keep it optional so Phase 1 is not blocked.
-3. **Which of F8's two listeners ships?** Resolved by F8; default TcpListener.
-4. **Where does `src/` product code start?** Phase 2. Phase 1 only adds `spike/`.
-5. **Do we keep the spike actions in the repo permanently?** Recommend keep `spike/` sources and the package manifest (used by the build tests), delete the actions from the user's profile (S7).
+   - **Resolution:** Adopted as an optional golden step. Phase 1 never blocks on it. Carried by: 01-03 Task 1 (RECIPE step 7 `GOLDEN | Examples` with Comment, Send Message, nested range If/Else and Play Sound `C:\Windows\Media\notify.wav`; step 8 exports it optionally; step 9 reports whether it was done) and 01-05, which does not require it (its golden interface lists `GOLDEN | Examples` as optional).
+3. **Which of F8's two listeners ships?** RESOLVED (decision rule fixed; outcome observed live as F8)
+   - **Resolution:** TcpListener is the default OAuth-callback listener unless the live session shows a problem with it. HttpListener is acceptable only if it binds without elevation and aborts in about 1 s or less. Carried by: 01-04 Task 2 (`SpikeListenHttp`, `SpikeListenTcp`, `SpikeAbortTiming` probes), 01-06 Task 1 (FINDINGS row F8), and 01-07 Task 3 (F8 status and the listener decision).
+4. **Where does `src/` product code start?** RESOLVED (Phase 2)
+   - **Resolution:** Product code under `src/` starts in Phase 2. Phase 1 adds no product code: only `spike/` sources plus dev tooling (`tools/`) and docs (`docs/live-spikes/`). Carried by: the `files_modified` lists of 01-01 to 01-07 (none contains `src/`) and the 01-04 planner assumption that spike files are never copied into `src/`.
+5. **Do we keep the spike actions in the repo permanently?** RESOLVED (keep sources, remove from the user's profile)
+   - **Resolution:** Keep the `spike/` sources and `tools/packages/spike.json` in the repo, because the build tests use them. Delete the `SPIKE |` actions, the `DA Spike Queue` queue and the `daSpikeHttpPort` global from the user's Streamer.bot profile at RUNSHEET step S7. Carried by: 01-04 (planner assumption: spike files stay in the repo), 01-05 Task 1 (creates `tools/packages/spike.json`), 01-06 Task 2 (RUNSHEET S7 cleanup step), and 01-07 Task 2 (the user runs S7).
 
 ## Environment Availability
 

@@ -24,6 +24,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ## Phase Details
 
 ### Phase 1: Live Spikes & Build Harness
+
 **Goal**: Design decisions rest on behavior verified in the user's Streamer.bot 1.0.7. The source can be compile-checked offline and packaged from the repo into an importable `.sb`.
 **Mode:** mvp
 **Depends on**: Nothing (first phase)
@@ -34,9 +35,27 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The spike `.sb` produced by the builder imports into Streamer.bot 1.0.7 without import or compile errors. Its custom trigger and `Execute C# Method` actions bind and run *(live: user confirms)*.
   4. The old shutdown hang is reproduced on purpose. With the spike's cancel-on-Dispose design, closing Streamer.bot while a background task and a pending listener are active logs `Cleaned up execute code instances` and `Streamer.bot exited`, and no `Streamer.bot.exe` stays in Task Manager *(live: user confirms)*.
   5. Spike findings are recorded in the repo, each marked "verified live" or "not verified": exit trigger existence, Dispose on recompile, Init vs Started ordering, custom trigger JSON shape, dictionary argument typing in If/Else, compiler language version, cross-AppDomain single-owner guard, and loopback listener under non-elevated Streamer.bot. The design decisions that follow from them are logged.
-**Plans**: TBD
+
+**Plans:** 7 plans
+
+Plans:
+**Wave 1**
+- [ ] 01-01-PLAN.md — Offline compile gate: net48 + CPH stub, self-test (CS1002/CS0246), stub drift check (wave 1)
+- [ ] 01-02-PLAN.md — `.sb` codec with bounded decode, plus decode/check/diff-ids/audit commands and tests (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 01-03-PLAN.md — Golden 1.0.7 export: Russian recipe, GoldenRuntime.cs, user export, audit, approved commit (wave 2, user checkpoints)
+- [ ] 01-04-PLAN.md — Spike sources DaSpikeA/DaSpikeB: cancel-on-Dispose host and probes, compile-checked (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 01-05-PLAN.md — Template-driven builder + spike manifest to dist/spike.sb with round-trip check (wave 3)
+- [ ] 01-06-PLAN.md — Evidence extractor, findings checker, FINDINGS skeleton, Russian run sheet (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 01-07-PLAN.md — Live session in Streamer.bot 1.0.7 and recorded findings and decisions (wave 4, user checkpoint)
 
 ### Phase 2: Walking Skeleton
+
 **Goal**: A streamer imports one `.sb`, sets two variables, authorizes, starts the connection, and sees a real donation fire `DonationAlerts: Donation`. Stopping the connection and closing Streamer.bot leaves nothing running.
 **Mode:** mvp
 **Depends on**: Phase 1
@@ -47,9 +66,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. `DA | Start` returns immediately, and the log shows the donation and goal channel subscriptions as confirmed by the server. A real donation fires `DonationAlerts: Donation` exactly once; a DonationAlerts test alert also counts if the Phase 1 spike showed that it reaches the API channel. A repeated donation id is ignored *(offline dedupe test; live: user confirms)*.
   4. `DA | Stop` ends the socket, listener and background tasks within about 3 s. Closing Streamer.bot in each of the Running, Connecting and OAuth-pending states lets `Streamer.bot.exe` exit, with `Cleaned up execute code instances` and `Streamer.bot exited` in the log *(live: user confirms)*.
   5. The session log and the trigger arguments contain no client secret, access/refresh token or streamer account data, and the log contains no donor names or messages *(offline redaction tests; grep of the user's live log)*.
+
 **Plans**: TBD
 
 ### Phase 3: Resilient Connection
+
 **Goal**: Once started, the connection survives hours of uptime, network drops, token expiry and repeated start/restart/recompile. No donation is lost or duplicated, and DonationAlerts is never hammered with requests.
 **Mode:** mvp
 **Depends on**: Phase 2
@@ -60,9 +81,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. On access-token expiry or a 401, including during reconnect, the integration refreshes once and concurrent callers share that refresh. It saves the new refresh token before using it and continues without user action. An `invalid_grant` response moves it into an authorization-required state instead of retry looping *(offline tests; live: user confirms recovery after expiry)*.
   4. Pressing Start or Restart repeatedly, recompiling the code, or re-importing the `.sb` never creates a second connection. The log shows one session, and each donation fires the trigger once *(live: user confirms)*.
   5. One command runs the offline unit tests for the Centrifugo codec and frame splitter (including batched and fragmented frames), event mapper, deduper, backoff and lifecycle state machine, and all of them pass.
+
 **Plans**: TBD
 
 ### Phase 4: Reaction-Ready Events
+
 **Goal**: The streamer can build amount reactions, chat thank-yous, TTS/OBS/audio playback and multi-currency handling from a complete, documented argument set, and receives goal progress events.
 **Mode:** mvp
 **Depends on**: Phase 3
@@ -73,9 +96,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. In `daMessageSafe`, leading `/`, `!` and `.` command prefixes and control/bidi characters are neutralized, so posting it to chat cannot trigger bot commands *(offline tests)*.
   4. `DonationAlerts: Goal updated` fires with `daGoal*` arguments only when goal values change. `DonationAlerts: Goal reached` fires once per goal when its target is reached *(offline tests; live: user confirms with a real goal)*.
   5. With audio download enabled, the donation audio file is on disk (https, allowed host, size cap, timeout) and its path is in `daAudioPath` when the trigger fires; the path is empty on failure or timeout. Old files are cleaned up automatically, and closing Streamer.bot during a download still exits cleanly *(offline tests; live: user confirms with one real audio donation)*.
+
 **Plans**: TBD
 
 ### Phase 5: Hands-Free Operation
+
 **Goal**: The integration can run on autopilot. It starts with Streamer.bot, reports its state, explains authorization problems clearly, signs out cleanly and checks for updates quietly.
 **Mode:** mvp
 **Depends on**: Phase 4
@@ -86,9 +111,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Connect shows a clear, specific message for each of: port busy, timeout, access denied, invalid client credentials *(offline tests; live: user confirms at least port busy and access denied)*.
   4. `DA | Sign out` clears stored tokens and stops the connection, and a later Start reports that authorization is required *(live: user confirms)*.
   5. The update check runs at most once per day and never delays startup. A newer version is reported only in the log, never in chat. Closing Streamer.bot during a check still exits cleanly *(offline throttle tests; live: user confirms)*.
+
 **Plans**: TBD
 
 ### Phase 6: Release Package & Russian Docs
+
 **Goal**: A Russian-speaking streamer can install, configure, verify and troubleshoot the integration using one `.sb` and the README, and the manual checklist backs every live claim.
 **Mode:** mvp
 **Depends on**: Phase 5
@@ -107,6 +134,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
      It also warns that Streamer.bot backups, `globals.db` and logs can contain secrets.
   4. The manual live-test checklist covers lifecycle/shutdown, reconnect, repeated start/stop, events and cleanup. The user has run it on the release build, and each item is marked passed, failed or not tested live.
+
 **Plans**: TBD
 
 ## Progress
