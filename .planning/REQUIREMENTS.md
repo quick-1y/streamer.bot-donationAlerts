@@ -104,13 +104,55 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (filled by roadmap) | | |
+| VER-01 | Phase 1 | Pending |
+| VER-02 | Phase 3 | Pending |
+| VER-03 | Phase 1 | Pending |
+| LIFE-01 | Phase 2 | Pending |
+| LIFE-02 | Phase 3 | Pending |
+| LIFE-03 | Phase 2 | Pending |
+| LIFE-04 | Phase 2 | Pending |
+| LIFE-05 | Phase 5 | Pending |
+| LIFE-06 | Phase 5 | Pending |
+| CONF-01 | Phase 2 | Pending |
+| CONF-02 | Phase 2 | Pending |
+| AUTH-01 | Phase 2 | Pending |
+| AUTH-02 | Phase 5 | Pending |
+| AUTH-03 | Phase 3 | Pending |
+| AUTH-04 | Phase 5 | Pending |
+| AUTH-05 | Phase 2 | Pending |
+| CONN-01 | Phase 2 | Pending |
+| CONN-02 | Phase 3 | Pending |
+| CONN-03 | Phase 3 | Pending |
+| CONN-04 | Phase 3 | Pending |
+| EVT-01 | Phase 2 | Pending |
+| EVT-02 | Phase 4 | Pending |
+| EVT-03 | Phase 4 | Pending |
+| EVT-04 | Phase 4 | Pending |
+| EVT-05 | Phase 4 | Pending |
+| EVT-06 | Phase 5 | Pending |
+| GOAL-01 | Phase 4 | Pending |
+| GOAL-02 | Phase 4 | Pending |
+| AUD-01 | Phase 4 | Pending |
+| AUD-02 | Phase 4 | Pending |
+| UPD-01 | Phase 5 | Pending |
+| PKG-01 | Phase 6 | Pending |
+| PKG-02 | Phase 6 | Pending |
+| PKG-03 | Phase 6 | Pending |
+| PKG-04 | Phase 1 | Pending |
+| DOC-01 | Phase 6 | Pending |
+| DOC-02 | Phase 6 | Pending |
+| DOC-03 | Phase 6 | Pending |
 
 **Coverage:**
 - v1 requirements: 38 total
-- Mapped to phases: 0
-- Unmapped: 38 ⚠️
+- Mapped to phases: 38
+- Unmapped: 0 ✓
+
+Cross-cutting notes (ownership stays with the phase listed above):
+- LIFE-04 (clean shutdown) is owned by Phase 2 and re-verified live in each later phase that adds I/O: backoff (Phase 3), audio download (Phase 4), update check and auto-start (Phase 5), release build (Phase 6).
+- EVT-01 (exactly-once) is owned by Phase 2 and re-verified across automatic reconnects in Phase 3.
+- VER-02 unit tests grow with each phase; Phase 3 completes the listed set (codec/frame splitter, mapper, deduper, backoff, state machine).
 
 ---
 *Requirements defined: 2026-10-17*
-*Last updated: 2026-10-17 after initial definition*
+*Last updated: 2026-10-17 after roadmap creation (traceability filled)*
