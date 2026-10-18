@@ -36,7 +36,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The old shutdown hang is reproduced on purpose. With the spike's cancel-on-Dispose design, closing Streamer.bot while a background task and a pending listener are active logs `Cleaned up execute code instances` and `Streamer.bot exited`, and no `Streamer.bot.exe` stays in Task Manager *(live: user confirms)*.
   5. Spike findings are recorded in the repo, each marked "verified live" or "not verified": exit trigger existence, Dispose on recompile, Init vs Started ordering, custom trigger JSON shape, dictionary argument typing in If/Else, compiler language version, cross-AppDomain single-owner guard, and loopback listener under non-elevated Streamer.bot. The design decisions that follow from them are logged.
 
-**Plans:** 2/7 plans executed
+**Plans:** 4/7 plans executed
 
 Plans:
 **Wave 1**
@@ -44,8 +44,8 @@ Plans:
 - [x] 01-02-PLAN.md — `.sb` codec with bounded decode, plus decode/check/diff-ids/audit commands and tests (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 01-03-PLAN.md — Golden 1.0.7 export: Russian recipe, GoldenRuntime.cs, user export, audit, approved commit (wave 2, user checkpoints)
-- [ ] 01-04-PLAN.md — Spike sources DaSpikeA/DaSpikeB: cancel-on-Dispose host and probes, compile-checked (wave 2)
+- [x] 01-03-PLAN.md — Golden 1.0.7 export: Russian recipe, GoldenRuntime.cs, user export, audit, approved commit (wave 2, user checkpoints)
+- [x] 01-04-PLAN.md — Spike sources DaSpikeA/DaSpikeB: cancel-on-Dispose host and probes, compile-checked (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 01-05-PLAN.md — Template-driven builder + spike manifest to dist/spike.sb with round-trip check (wave 3)
@@ -144,7 +144,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Live Spikes & Build Harness | 2/7 | In Progress | - |
+| 1. Live Spikes & Build Harness | 4/7 | In Progress | - |
 | 2. Walking Skeleton | 0/TBD | Not started | - |
 | 3. Resilient Connection | 0/TBD | Not started | - |
 | 4. Reaction-Ready Events | 0/TBD | Not started | - |
