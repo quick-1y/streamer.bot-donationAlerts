@@ -76,3 +76,17 @@ public class CPHInline
 ## Inputs
 
 Only package-manifest sources (`tools/packages/*.json`, field `codes[].source`) and `tools/golden/*.cs` are default inputs. The legacy scripts in the repository root (`integration.cs`, `updateChecker.cs`) are never inputs: they do not compile today and are rewritten in Phase 2.
+
+## Stub drift check (optional)
+
+The gate never requires this. `tools/verify-stub.ps1` compares the members declared in `tools/compile-check/Stub/CphStub.cs` with the Plugin Interface of a local Streamer.bot install, so the hand-written stub can be re-checked after a Streamer.bot update.
+
+```text
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-stub.ps1 -StreamerBotDir <Streamer.bot folder> [-Facts]
+```
+
+- It reads DLL metadata only (reflection-only load); no code from the install is executed, and the `data` folder and logs are never opened.
+- Output: `OK <return type> <member>(<parameter types>)` for each stub member found in the real interface, `DRIFT <member>/<arity>: ...` for each one that is not. It prints only the stub's own members and never lists other proxy members.
+- Exit code 1 when any `DRIFT` line was printed, otherwise 0.
+- `-Facts` also prints the `EventType` values for StreamerbotStarted, StreamerbotExiting, CustomEvent and CustomCodeEvent and the file versions of `Streamer.bot.exe`, `Newtonsoft.Json.dll` and `Microsoft.CodeAnalysis.CSharp.dll`. These are offline facts, not live behavior.
+- Streamer.bot DLLs are never committed to this repository.
