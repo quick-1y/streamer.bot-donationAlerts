@@ -338,5 +338,169 @@ class DiffIdsTests(unittest.TestCase):
         self.assertTrue(err.startswith("ERROR "))
 
 
+def audit_model(model, extra_args=()):
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_file(tmp, "m.sb", build_sb.pack(model))
+        return run_cli(["audit", path] + list(extra_args))
+
+
+def b64_text(text):
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+PLANTED = {
+    "jwt": "eyJhbGciOiJIUzI1NiJ9.e30.abc",
+    "bearer": "Bearer zzTopSecretValue",
+    "client_secret": "my client_secret value",
+    "access_token": "my access_token value",
+    "refresh_token": "my refresh_token value",
+    "oauth-token": "oauth:qwertyuiop",
+    "email": "streamer.person@example.org",
+    "user-profile-path": "C:\\Users\\someone\\Documents\\notes.txt",
+    "long-token": "0123456789abcdef0123456789abcdef01234567",
+}
+
+
+class AuditTests(unittest.TestCase):
+    def test_audit_clean_model_has_no_hard_findings(self):
+        code, out, _ = audit_model(make_model())
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("HARD ", out)
+        self.assertIn("audit: 0 hard,", out)
+
+    def test_audit_planted_patterns_are_hard_and_never_echoed(self):
+        for rule, planted in PLANTED.items():
+            model = make_model()
+            model["meta"]["description"] = planted
+            code, out, _ = audit_model(model)
+            self.assertEqual(code, 1, rule)
+            self.assertIn("HARD secret:%s $.meta.description" % rule, out)
+            self.assertNotIn(planted, out, rule)
+        for rule in ("jwt", "email", "long-token", "oauth-token"):
+            model = make_model()
+            model["meta"]["description"] = PLANTED[rule]
+            _, out, _ = audit_model(model)
+            self.assertNotIn(PLANTED[rule][:8], out, rule)
+
+    def test_audit_ignores_guids_and_reference_dll_paths(self):
+        model = make_model()
+        sub = model["data"]["actions"][0]["subActions"][0]
+        sub["references"] = [
+            "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\mscorlib.dll",
+            "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\System.dll",
+            ".\\Newtonsoft.Json.dll",
+        ]
+        code, out, _ = audit_model(model)
+        self.assertEqual(code, 0, out)
+
+    def test_audit_flags_secret_inside_decoded_bytecode_but_not_raw_base64(self):
+        model = make_model()
+        sub = model["data"]["actions"][0]["subActions"][0]
+        sub["byteCode"] = b64_text('class CPHInline { string h = "Bearer abc"; }')
+        code, out, _ = audit_model(model)
+        self.assertEqual(code, 1)
+        self.assertIn("HARD secret:bearer", out)
+        self.assertIn("byteCode", out)
+        self.assertNotIn("Bearer abc", out)
+
+    def test_audit_does_not_scan_raw_bytecode_base64_as_long_token(self):
+        model = make_model()
+        sub = model["data"]["actions"][0]["subActions"][0]
+        sub["byteCode"] = b64_text("public class CPHInline { public bool Execute() { return true; } } // padding padding")
+        self.assertGreaterEqual(len(sub["byteCode"]), 32)
+        code, out, _ = audit_model(model)
+        self.assertEqual(code, 0, out)
+
+    def test_audit_flags_undecodable_bytecode(self):
+        model = make_model()
+        model["data"]["actions"][0]["subActions"][0]["byteCode"] = "***"
+        code, out, _ = audit_model(model)
+        self.assertEqual(code, 1)
+        self.assertIn("HARD structure:bytecode-undecodable", out)
+
+    def test_audit_flags_non_empty_forbidden_collections(self):
+        for key in ("commands", "websocketServers", "websocketClients", "timers"):
+            model = make_model()
+            model["data"][key] = [{"name": "x"}]
+            code, out, _ = audit_model(model)
+            self.assertEqual(code, 1, key)
+            self.assertIn("HARD structure:non-empty-%s" % key, out)
+
+    def test_audit_flags_action_name_outside_allowed_prefixes(self):
+        model = make_model()
+        model["data"]["actions"][0]["name"] = "Other | X"
+        code, out, _ = audit_model(model)
+        self.assertEqual(code, 1)
+        self.assertIn("HARD structure:action-prefix", out)
+
+    def test_audit_allow_prefix_option_extends_allowed_prefixes(self):
+        model = make_model()
+        model["data"]["actions"][0]["name"] = "Other | X"
+        code, out, _ = audit_model(model, ["--allow-prefix", "Other |"])
+        self.assertEqual(code, 0, out)
+
+    def test_audit_unknown_key_is_review_only(self):
+        model = make_model()
+        model["data"]["actions"][0]["mystery"] = 1
+        model["data"]["actions"][0]["subActions"][0]["extraThing"] = 2
+        code, out, _ = audit_model(model)
+        self.assertEqual(code, 0, out)
+        self.assertIn("REVIEW unknown-key action mystery", out)
+        self.assertIn("REVIEW unknown-key subaction:99999 extraThing", out)
+
+    def test_audit_reports_author_queue_and_inventory_lines(self):
+        model = make_model()
+        model["meta"]["author"] = "Some Author"
+        model["data"]["queues"].append({"id": OTHER_ID, "name": "Q"})
+        model["data"]["actions"][0]["triggers"].append({"id": STRANGER_ID, "type": 401})
+        code, out, _ = audit_model(model)
+        self.assertEqual(code, 0, out)
+        self.assertIn("REVIEW meta.author=Some Author", out)
+        self.assertIn("REVIEW queue=Q", out)
+        self.assertIn("INFO version=23 exportedFrom=1.0.4 minimumVersion=1.0.0-alpha.1", out)
+        self.assertIn("INFO meta.name=Synthetic", out)
+        self.assertIn("INFO actions=1 GOLDEN | T", out)
+        self.assertIn("INFO subActionTypes=99999", out)
+        self.assertIn("INFO triggerTypes=401", out)
+
+    def test_audit_output_order_is_info_review_hard_summary(self):
+        model = make_model()
+        model["meta"]["description"] = PLANTED["email"]
+        model["data"]["actions"][0]["mystery"] = 1
+        _, out, _ = audit_model(model)
+        lines = out.splitlines()
+        first = {tag: next(i for i, l in enumerate(lines) if l.startswith(tag)) for tag in ("INFO", "REVIEW", "HARD", "audit:")}
+        self.assertLess(first["INFO"], first["REVIEW"])
+        self.assertLess(first["REVIEW"], first["HARD"])
+        self.assertLess(first["HARD"], first["audit:"])
+
+    def test_audit_review_lines_do_not_echo_secret_looking_values(self):
+        model = make_model()
+        model["meta"]["author"] = PLANTED["email"]
+        _, out, _ = audit_model(model)
+        self.assertNotIn(PLANTED["email"], out)
+
+    def test_audit_findings_returns_hard_review_info_lists(self):
+        hard, review, info = build_sb.audit_findings(make_model(), build_sb.DEFAULT_ALLOWED_PREFIXES)
+        self.assertEqual(hard, [])
+        self.assertTrue(any(line.startswith("INFO ") for line in info))
+        self.assertTrue(all(line.startswith("REVIEW ") for line in review))
+
+    def test_audit_exit_2_on_malformed_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_file(tmp, "bad.sb", payload_of(b"{}", extra=b"x"))
+            code, _, err = run_cli(["audit", path])
+        self.assertEqual(code, 2)
+        self.assertTrue(err.startswith("ERROR "))
+
+    def test_audit_help_mentions_allow_prefix(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                build_sb.main(["audit", "--help"])
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn("--allow-prefix", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
