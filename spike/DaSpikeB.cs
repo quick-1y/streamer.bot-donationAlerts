@@ -78,6 +78,11 @@ public class CPHInline
         Log("ERROR", "method=" + method + " type=" + typeName);
     }
 
+    private static string Flag(bool value)
+    {
+        return value ? "true" : "false";
+    }
+
     private string DomainName()
     {
         try
@@ -165,7 +170,7 @@ public class CPHInline
             bool createdNew;
             OwnerSemaphore = new Semaphore(1, 1, OwnerSemaphoreName, out createdNew);
             OwnerHeld = OwnerSemaphore.WaitOne(0);
-            Log("OWN-SEM", "acquired=" + OwnerHeld + " createdNew=" + createdNew);
+            Log("OWN-SEM", "acquired=" + Flag(OwnerHeld) + " createdNew=" + Flag(createdNew));
             return true;
         }
         catch (Exception ex)
@@ -186,7 +191,7 @@ public class CPHInline
                 OwnerHeld = false;
                 released = true;
             }
-            Log("OWN-SEM", "released=" + released);
+            Log("OWN-SEM", "released=" + Flag(released));
             return true;
         }
         catch (Exception ex)
