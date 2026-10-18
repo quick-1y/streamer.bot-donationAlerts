@@ -1,0 +1,72 @@
+{
+  "package": "spike",
+  "namespace": "2d2b3ddb-9954-4395-a36f-e2f8ce1d0a64",
+  "golden": "tools/golden/golden-1.0.7.sb",
+  "out": "dist/spike.sb",
+  "meta": {
+    "name": "DA Spike",
+    "author": "streamer.bot-donationAlerts",
+    "version": "0.0.1",
+    "description": "Phase 1 live spike (throwaway). Delete after the run sheet."
+  },
+  "group": "DonationAlerts Spike",
+  "templates": {
+    "action": "GOLDEN | Runtime",
+    "code": {
+      "action": "GOLDEN | Runtime",
+      "type": 99999
+    },
+    "method": {
+      "action": "GOLDEN | Call",
+      "type": 99998,
+      "code_ref_key": "executeCodeId",
+      "method_key": "method"
+    },
+    "queue": "Golden Queue"
+  },
+  "queues": [
+    {
+      "key": "q",
+      "name": "DA Spike Queue"
+    }
+  ],
+  "codes": [
+    {
+      "key": "a",
+      "name": "DaSpikeA",
+      "source": "spike/DaSpikeA.cs",
+      "description": "DonationAlerts live spike A",
+      "precompile": true,
+      "delayStart": false
+    },
+    {
+      "key": "b",
+      "name": "DaSpikeB",
+      "source": "spike/DaSpikeB.cs",
+      "description": "DonationAlerts live spike B",
+      "precompile": true,
+      "delayStart": false
+    }
+  ],
+  "actions": [
+    {
+      "name": "SPIKE | Runtime A",
+      "subActions": [
+        {"kind": "code", "code": "a"}
+      ]
+    },
+    {
+      "name": "SPIKE | Runtime B",
+      "subActions": [
+        {"kind": "code", "code": "b"}
+      ]
+    },
+    {
+      "name": "SPIKE | Info",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeInfo"},
+        {"kind": "method", "code": "b", "method": "SpikeBInfo"}
+      ]
+    }
+  ]
+}

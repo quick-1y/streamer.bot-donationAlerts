@@ -16,9 +16,11 @@ import base64
 import binascii
 import copy
 import gzip
+import hashlib
 import json
 import re
 import sys
+import uuid
 import zlib
 from pathlib import Path
 
@@ -427,6 +429,464 @@ def audit_findings(model, allowed_prefixes):
     return hard, review, info
 
 
+PACKAGES_DIR = REPO_ROOT / "tools" / "packages"
+PACKAGE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+BUILD_CHECK_NAMES = ("roundtrip", "model", "bytecode", "no-bom", "deterministic")
+MAX_FINDINGS_PER_CHECK = 10
+
+
+class MissingTemplateError(SbFormatError):
+    """The golden export lacks an object kind the manifest needs."""
+
+    def __init__(self, kind):
+        super().__init__("golden lacks %s; re-export golden including it (tools/golden/RECIPE.md)" % kind)
+        self.kind = kind
+
+
+def _manifest_error(message):
+    return SbFormatError("manifest: " + message)
+
+
+def _require(condition, message):
+    if not condition:
+        raise _manifest_error(message)
+
+
+def _is_text(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _contained(raw, base, label):
+    """Resolve a repo-relative manifest path and require it to stay under base."""
+    if not _is_text(raw):
+        raise _manifest_error("%s must be a non-empty string" % label)
+    resolved = (REPO_ROOT / raw).resolve()
+    try:
+        resolved.relative_to(base.resolve())
+    except ValueError:
+        raise _manifest_error("%s resolves outside the allowed directory" % label)
+    return resolved
+
+
+def source_path(entry):
+    """Absolute path of a manifest code source; it must exist and lie inside the repository."""
+    resolved = _contained(entry.get("source"), REPO_ROOT, "codes[].source %r" % entry.get("source"))
+    if not resolved.is_file():
+        raise _manifest_error("source file not found: %s" % entry.get("source"))
+    return resolved
+
+
+def validate_manifest(manifest, name):
+    _require(isinstance(manifest, dict), "top-level value must be an object")
+    for key in ("package", "namespace", "golden", "out", "meta", "group", "templates", "queues", "codes", "actions"):
+        _require(key in manifest, "missing key %s" % key)
+    _require(manifest["package"] == name, "package must equal the file name %r" % name)
+    try:
+        _require(str(uuid.UUID(manifest["namespace"])) == manifest["namespace"], "namespace must be a lowercase UUID")
+    except (ValueError, AttributeError, TypeError):
+        raise _manifest_error("namespace must be a UUID string")
+    _contained(manifest["golden"], REPO_ROOT, "golden")
+    _contained(manifest["out"], REPO_ROOT / "dist", "out")
+    meta = manifest["meta"]
+    _require(isinstance(meta, dict), "meta must be an object")
+    for key in ("name", "author", "version", "description"):
+        _require(isinstance(meta.get(key), str), "meta.%s must be a string" % key)
+    _require(_is_text(manifest["group"]), "group must be a non-empty string")
+
+    templates = manifest["templates"]
+    _require(isinstance(templates, dict), "templates must be an object")
+    _require(_is_text(templates.get("action")), "templates.action must be a string")
+    _require(_is_text(templates.get("queue")), "templates.queue must be a string")
+    for kind, keys in (("code", ("action", "type")), ("method", ("action", "type", "code_ref_key", "method_key"))):
+        entry = templates.get(kind)
+        _require(isinstance(entry, dict), "templates.%s must be an object" % kind)
+        for key in keys:
+            _require(key in entry, "templates.%s.%s is missing" % (kind, key))
+        _require(isinstance(entry["type"], int) and not isinstance(entry["type"], bool), "templates.%s.type must be an integer" % kind)
+
+    queue_keys = set()
+    _require(isinstance(manifest["queues"], list), "queues must be a list")
+    for queue in manifest["queues"]:
+        _require(isinstance(queue, dict) and _is_text(queue.get("key")) and _is_text(queue.get("name")), "each queue needs key and name")
+        _require(queue["key"] not in queue_keys, "duplicate queue key %s" % queue["key"])
+        queue_keys.add(queue["key"])
+
+    code_keys = {}
+    _require(isinstance(manifest["codes"], list) and manifest["codes"], "codes must be a non-empty list")
+    for code in manifest["codes"]:
+        _require(isinstance(code, dict), "each code must be an object")
+        for key in ("key", "name", "source", "description"):
+            _require(_is_text(code.get(key)), "codes[].%s must be a non-empty string" % key)
+        for key in ("precompile", "delayStart"):
+            _require(isinstance(code.get(key), bool), "codes[].%s must be a boolean" % key)
+        _require(code["key"] not in code_keys, "duplicate code key %s" % code["key"])
+        code_keys[code["key"]] = 0
+        source_path(code)
+
+    _require(isinstance(manifest["actions"], list) and manifest["actions"], "actions must be a non-empty list")
+    allowed = {"name", "optional", "queue", "triggers", "subActions", "template_action", "trigger_override", "append_subActions"}
+    names = set()
+    for action in manifest["actions"]:
+        _require(isinstance(action, dict) and _is_text(action.get("name")), "each action needs a name")
+        _require(action["name"] not in names, "duplicate action name %s" % action["name"])
+        names.add(action["name"])
+        unknown = sorted(set(action) - allowed)
+        _require(not unknown, "action %s has unknown keys %s" % (action["name"], unknown))
+        _require("queue" not in action or action["queue"] in queue_keys, "action %s uses an unknown queue key" % action["name"])
+        _require(not ("template_action" in action and ("triggers" in action or "subActions" in action)),
+                 "action %s mixes template_action with triggers/subActions" % action["name"])
+        _require(not (("trigger_override" in action or "append_subActions" in action) and "template_action" not in action),
+                 "action %s uses trigger_override/append_subActions without template_action" % action["name"])
+        for trigger in action.get("triggers") or []:
+            _require(isinstance(trigger, dict) and isinstance(trigger.get("type"), int), "action %s has a trigger without an integer type" % action["name"])
+            _require(isinstance(trigger.get("override", {}), dict), "action %s trigger override must be an object" % action["name"])
+        for sub in list(action.get("subActions") or []) + list(action.get("append_subActions") or []):
+            _require(isinstance(sub, dict) and sub.get("kind") in ("code", "method"), "action %s has a sub-action with an unknown kind" % action["name"])
+            _require(sub.get("code") in code_keys, "action %s references unknown code %r" % (action["name"], sub.get("code")))
+            if sub["kind"] == "method":
+                _require(_is_text(sub.get("method")), "action %s has a method sub-action without a method" % action["name"])
+            else:
+                code_keys[sub["code"]] += 1
+                _require(code_keys[sub["code"]] == 1, "code %s is embedded more than once" % sub["code"])
+
+
+def load_manifest(name):
+    """Read and validate tools/packages/<name>.json (json.load only, no code execution)."""
+    if not isinstance(name, str) or not PACKAGE_NAME_RE.match(name):
+        raise SbFormatError("invalid package name %r" % name)
+    path = PACKAGES_DIR / (name + ".json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except OSError:
+        raise SbFormatError("manifest not found: tools/packages/%s.json" % name)
+    except (ValueError, RecursionError):
+        raise _manifest_error("tools/packages/%s.json is not valid JSON" % name)
+    validate_manifest(manifest, name)
+    return manifest
+
+
+def _find_sub(subs, sub_type):
+    for sub in _walk_sub_actions(subs):
+        if sub.get("type") == sub_type:
+            return sub
+    return None
+
+
+class Templates:
+    """Object shapes taken from the golden export; lookups raise MissingTemplateError when absent.
+
+    Lookups return the golden's own objects. Callers deep-copy before changing anything.
+    """
+
+    def __init__(self, golden_model):
+        data = golden_model.get("data") if isinstance(golden_model.get("data"), dict) else {}
+        self.model = golden_model
+        self.actions = {}
+        for action in data.get("actions") or []:
+            if isinstance(action, dict) and isinstance(action.get("name"), str):
+                self.actions.setdefault(action["name"], action)
+        self.queues = {}
+        for queue in data.get("queues") or []:
+            if isinstance(queue, dict) and isinstance(queue.get("name"), str):
+                self.queues.setdefault(queue["name"], queue)
+        self.triggers = {}
+        for action in data.get("actions") or []:
+            for trigger in (action.get("triggers") or []) if isinstance(action, dict) else []:
+                if isinstance(trigger, dict):
+                    self.triggers.setdefault(trigger.get("type"), trigger)
+
+    def action(self, name):
+        if name not in self.actions:
+            raise MissingTemplateError("action:%s" % name)
+        return self.actions[name]
+
+    def queue(self, name):
+        if name not in self.queues:
+            raise MissingTemplateError("queue:%s" % name)
+        return self.queues[name]
+
+    def trigger(self, trigger_type):
+        if trigger_type not in self.triggers:
+            raise MissingTemplateError("trigger:%s" % trigger_type)
+        return self.triggers[trigger_type]
+
+    def sub_action(self, action_name, sub_type):
+        found = _find_sub(self.action(action_name).get("subActions"), sub_type)
+        if found is None:
+            raise MissingTemplateError("subaction:%s in action:%s" % (sub_type, action_name))
+        return found
+
+    def code(self, spec):
+        return self.sub_action(spec["code"]["action"], spec["code"]["type"])
+
+    def method(self, spec):
+        return self.sub_action(spec["method"]["action"], spec["method"]["type"])
+
+
+def stable_id(namespace, *parts):
+    """Deterministic GUID: uuid5 of the namespace and the '/'-joined stable name."""
+    return str(uuid.uuid5(uuid.UUID(namespace), "/".join(parts)))
+
+
+def normalize_source(path):
+    """Source text as embedded: UTF-8 without BOM, every line ending CRLF."""
+    raw = Path(path).read_bytes()
+    if raw.startswith(BOM):
+        raw = raw[len(BOM):]
+    text = raw.decode("utf-8")
+    return text.replace("\r\n", "\n").replace("\n", "\r\n")
+
+
+def embed_source(text):
+    """byteCode value: base64 of the UTF-8 bytes, no BOM."""
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def set_existing(obj, key, value, kind):
+    """Set a key that the golden template already has; never create a field."""
+    if key not in obj:
+        raise SbFormatError("manifest key %s not in golden %s template (no invented fields)" % (key, kind))
+    obj[key] = value
+
+
+class _Ids:
+    """Stable-name registry: every id handed out is remembered as name -> id."""
+
+    def __init__(self, namespace, package):
+        self.namespace = namespace
+        self.package = package
+        self.names = {}
+
+    def get(self, *parts):
+        parts = (self.package,) + tuple(parts)
+        name = "/".join(parts)
+        self.names[name] = stable_id(self.namespace, *parts)
+        return self.names[name]
+
+
+def _build_queue(entry, templates, spec, ids):
+    queue = copy.deepcopy(templates.queue(spec["queue"]))
+    set_existing(queue, "id", ids.get("queue", entry["name"]), "queue")
+    set_existing(queue, "name", entry["name"], "queue")
+    return queue
+
+
+def _code_sub(entry, templates, spec, ids, index):
+    sub = copy.deepcopy(templates.code(spec))
+    set_existing(sub, "id", ids.get("code", entry["key"]), "code")
+    set_existing(sub, "index", index, "code")
+    set_existing(sub, "name", entry["name"], "code")
+    set_existing(sub, "description", entry["description"], "code")
+    set_existing(sub, "byteCode", embed_source(normalize_source(source_path(entry))), "code")
+    set_existing(sub, "precompile", entry["precompile"], "code")
+    set_existing(sub, "delayStart", entry["delayStart"], "code")
+    return sub
+
+
+def _method_sub(sub_entry, templates, spec, ids, index, action_name):
+    sub = copy.deepcopy(templates.method(spec))
+    set_existing(sub, "id", ids.get("sub", action_name, str(index)), "method")
+    set_existing(sub, "index", index, "method")
+    set_existing(sub, spec["method"]["code_ref_key"], ids.get("code", sub_entry["code"]), "method")
+    set_existing(sub, spec["method"]["method_key"], sub_entry["method"], "method")
+    return sub
+
+
+def _build_plain_action(entry, manifest, templates, queue_ids, ids):
+    spec = manifest["templates"]
+    codes = {code["key"]: code for code in manifest["codes"]}
+    action = copy.deepcopy(templates.action(spec["action"]))
+    name = entry["name"]
+    set_existing(action, "id", ids.get("action", name), "action")
+    set_existing(action, "name", name, "action")
+    set_existing(action, "group", manifest["group"], "action")
+    set_existing(action, "enabled", True, "action")
+    set_existing(action, "queue", queue_ids[entry["queue"]] if "queue" in entry else NULL_GUID, "action")
+    subs = []
+    for index, sub_entry in enumerate(entry.get("subActions") or []):
+        if sub_entry["kind"] == "code":
+            subs.append(_code_sub(codes[sub_entry["code"]], templates, spec, ids, index))
+        else:
+            subs.append(_method_sub(sub_entry, templates, spec, ids, index, name))
+    set_existing(action, "triggers", [], "action")
+    set_existing(action, "subActions", subs, "action")
+    return action
+
+
+def build_model(manifest, templates, skipped=None):
+    """Build the package model from the manifest and golden templates.
+
+    Returns (model, expected_ids); expected_ids maps each stable name to the id used for it.
+    Lines for optional actions whose template kind is missing are appended to `skipped`.
+    """
+    ids = _Ids(manifest["namespace"], manifest["package"])
+    model = copy.deepcopy(templates.model)
+    for key in FORBIDDEN_COLLECTIONS:
+        if model["data"].get(key):
+            raise SbFormatError("golden data.%s is not empty; refusing to copy it into a package" % key)
+    for key in ("name", "author", "version", "description"):
+        set_existing(model["meta"], key, manifest["meta"][key], "meta")
+
+    queues, queue_ids = [], {}
+    for entry in manifest["queues"]:
+        queues.append(_build_queue(entry, templates, manifest["templates"], ids))
+        queue_ids[entry["key"]] = ids.get("queue", entry["name"])
+
+    actions = []
+    for entry in manifest["actions"]:
+        local = _Ids(manifest["namespace"], manifest["package"])
+        try:
+            actions.append(_build_plain_action(entry, manifest, templates, queue_ids, local))
+        except MissingTemplateError as e:
+            if not entry.get("optional"):
+                raise
+            if skipped is not None:
+                skipped.append("SKIP %s: golden lacks %s" % (entry["name"], e.kind))
+            continue
+        ids.names.update(local.names)
+    set_existing(model["data"], "queues", queues, "data")
+    set_existing(model["data"], "actions", actions, "data")
+    return model, dict(ids.names)
+
+
+def _display_path(path):
+    try:
+        return Path(path).resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _code_subs(model, manifest):
+    code_type = manifest["templates"]["code"]["type"]
+    data = model.get("data") if isinstance(model.get("data"), dict) else {}
+    found = []
+    for action in data.get("actions") or []:
+        if isinstance(action, dict):
+            found.extend(s for s in _walk_sub_actions(action.get("subActions")) if s.get("type") == code_type)
+    return found
+
+
+def _bc_roundtrip(model, json_bytes, manifest, templates, expected_ids):
+    try:
+        reparsed = json.loads(json_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return ["decoded bytes are not valid JSON"]
+    if dump(reparsed) != json_bytes:
+        return ["re-serializing the decoded JSON does not reproduce the decoded bytes"]
+    return []
+
+
+def _bc_model(model, json_bytes, manifest, templates, expected_ids):
+    rebuilt, _ = build_model(manifest, templates)
+    if model != rebuilt:
+        return ["decoded model differs from the model built in memory"]
+    return []
+
+
+def _bc_bytecode(model, json_bytes, manifest, templates, expected_ids):
+    findings = []
+    subs = _code_subs(model, manifest)
+    by_name = {s.get("name"): s for s in subs}
+    for entry in manifest["codes"]:
+        sub = by_name.get(entry["name"])
+        if sub is None:
+            findings.append("code %s is missing from the output" % entry["name"])
+            continue
+        try:
+            decoded = decode_bytecode(sub.get("byteCode"))
+        except SbFormatError:
+            findings.append("code %s byteCode is not valid base64 UTF-8" % entry["name"])
+            continue
+        if decoded != normalize_source(source_path(entry)):
+            findings.append("code %s byteCode differs from the normalized %s" % (entry["name"], entry["source"]))
+    if len(subs) != len(manifest["codes"]):
+        findings.append("output has %d code sub-actions, manifest lists %d" % (len(subs), len(manifest["codes"])))
+    return findings
+
+
+def _bc_no_bom(model, json_bytes, manifest, templates, expected_ids):
+    findings = []
+    if json_bytes.startswith(BOM):
+        findings.append("decoded JSON starts with a UTF-8 BOM")
+    for sub in _code_subs(model, manifest):
+        try:
+            raw = base64.b64decode(sub.get("byteCode"), validate=True)
+        except (binascii.Error, ValueError, TypeError):
+            continue
+        if raw.startswith(BOM):
+            findings.append("code %s byteCode starts with a UTF-8 BOM" % sub.get("name"))
+    return findings
+
+
+def _bc_deterministic(model, json_bytes, manifest, templates, expected_ids):
+    first, _ = build_model(manifest, templates)
+    second, _ = build_model(manifest, templates)
+    findings = []
+    if pack(first) != pack(second):
+        findings.append("two builds in memory pack to different bytes")
+    if dump(second) != json_bytes:
+        findings.append("a fresh build does not reproduce the decoded JSON of the written file")
+    return findings
+
+
+_BUILD_CHECKS = (
+    ("roundtrip", _bc_roundtrip),
+    ("model", _bc_model),
+    ("bytecode", _bc_bytecode),
+    ("no-bom", _bc_no_bom),
+    ("deterministic", _bc_deterministic),
+)
+
+
+def verify_built(model, json_bytes, manifest, templates, expected_ids):
+    """Findings for a built package, each formatted '<check>: <detail>'; empty when it is sound.
+
+    `model` and `json_bytes` are what read_sb returned for the written file.
+    """
+    findings = []
+    for name, check in _BUILD_CHECKS:
+        for detail in check(model, json_bytes, manifest, templates, expected_ids):
+            findings.append("%s: %s" % (name, detail))
+    return findings
+
+
+def _cmd_build(args):
+    manifest = load_manifest(args.package)
+    golden_path = Path(args.golden) if args.golden else REPO_ROOT / manifest["golden"]
+    out_path = Path(args.out) if args.out else REPO_ROOT / manifest["out"]
+    golden_model, _ = read_sb(golden_path)
+    templates = Templates(golden_model)
+    skipped = []
+    try:
+        model, expected_ids = build_model(manifest, templates, skipped)
+    except MissingTemplateError as e:
+        sys.stderr.write("ERROR %s\n" % e)
+        return 1
+    json_bytes = dump(model)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(pack(model))
+    for line in skipped:
+        print(line)
+    print("built %s actions=%d sha256-json=%s" % (
+        _display_path(out_path), len(model["data"]["actions"]), hashlib.sha256(json_bytes).hexdigest()))
+    if not args.check:
+        return 0
+    written, written_bytes = read_sb(out_path)
+    findings = verify_built(written, written_bytes, manifest, templates, expected_ids)
+    failed = 0
+    for name in BUILD_CHECK_NAMES:
+        details = [f.split(": ", 1)[1] for f in findings if f.split(": ", 1)[0] == name]
+        if not details:
+            print("PASS build-check:%s" % name)
+            continue
+        failed += 1
+        for detail in details[:MAX_FINDINGS_PER_CHECK]:
+            print("FAIL build-check:%s %s" % (name, detail))
+    print("build-check: %d failed" % failed)
+    return 1 if failed else 0
+
+
 def _pretty_copy(model):
     shown = copy.deepcopy(model)
     _replace_bytecode(shown)
@@ -518,6 +978,12 @@ def _build_parser():
     audit.add_argument("--allow-prefix", action="append", metavar="PREFIX",
                        help="additional allowed action-name prefix (defaults: %s)" % ", ".join(DEFAULT_ALLOWED_PREFIXES))
     audit.set_defaults(func=_cmd_audit)
+    build = sub.add_parser("build", help="build a package .sb from tools/packages/<package>.json and the golden templates")
+    build.add_argument("package")
+    build.add_argument("--golden", help="golden .sb to take templates from (default: the manifest's golden)")
+    build.add_argument("--out", help="output .sb path (default: the manifest's out)")
+    build.add_argument("--check", action="store_true", help="re-read the written file and run the build checks")
+    build.set_defaults(func=_cmd_build)
     return parser
 
 
