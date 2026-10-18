@@ -21,7 +21,8 @@
   "commands": [
     {"key": "connect", "name": "DA Connect", "command": "!daconnect"},
     {"key": "start", "name": "DA Start", "command": "!dastart"},
-    {"key": "stop", "name": "DA Stop", "command": "!dastop"}
+    {"key": "stop", "name": "DA Stop", "command": "!dastop"},
+    {"key": "ranges", "name": "DA Ranges", "command": "!daranges"}
   ],
   "codes": [
     {
@@ -76,9 +77,18 @@
       ]
     },
     {
+      "name": "DA | Ranges",
+      "triggers": [
+        {"type": 401, "command": "ranges"}
+      ],
+      "subActions": [
+        {"kind": "method", "code": "da", "method": "EditRanges"}
+      ]
+    },
+    {
       "name": "DA | On donation",
       "triggers": [
-        {"type": 18002, "override": {"name": "DonationAlerts: Donation", "eventName": "daDonation"}}
+        {"type": 18002, "override": {"name": "Any donate", "eventName": "daDonation"}}
       ],
       "subActions": [
         {"kind": "method", "code": "da", "method": "ShowDonation"}

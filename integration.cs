@@ -92,16 +92,75 @@ public class CPHInline
     private DonationAlertsSettings Settings { get; set; }
 
     private Task WatcherTask { get; set; }
+    private HashSet<string> RegisteredRangeEvents { get; set; } = new HashSet<string>();
 
     public const string EventDonation = "daDonation";
     public const string EventGoal = "daGoal";
     private const string TriggerCategory = "DonationAlerts";
+    private const string RangesVar = "daRanges";
 
     public void Init()
     {
-        CPH.RegisterCustomTrigger("DonationAlerts: Donation", EventDonation, new[] { TriggerCategory });
-        CPH.RegisterCustomTrigger("DonationAlerts: Goal updated", EventGoal, new[] { TriggerCategory });
+        CPH.RegisterCustomTrigger("Any donate", EventDonation, new[] { TriggerCategory });
+        CPH.RegisterCustomTrigger("Goal updated", EventGoal, new[] { TriggerCategory });
+        RegisterRangeTriggers(LoadRanges());
         EnsureInitialized();
+    }
+    public bool EditRanges()
+    {
+        EnsureInitialized();
+        if (!IsBroadcasterOrInternal())
+            return false;
+
+        Logger.Info("Opening the donation ranges page in your browser");
+        OpenUrl(Service.RangesUrl);
+        Service.ServeRangesPage(Settings.AuthTimeoutSeconds, LoadRanges, SaveRanges);
+        return true;
+    }
+    private List<DonationRange> LoadRanges()
+    {
+        return DonationRange.ParseList(CPH.GetGlobalVar<string>(RangesVar));
+    }
+    private void SaveRanges(List<DonationRange> ranges)
+    {
+        CPH.SetGlobalVar(RangesVar, DonationRange.Serialize(ranges), true);
+        RegisterRangeTriggers(ranges);
+        Logger.Info("Donation ranges saved: " + (ranges.Count == 0 ? "none" : DonationRange.Serialize(ranges)));
+    }
+    private void RegisterRangeTriggers(List<DonationRange> ranges)
+    {
+        foreach (var range in ranges)
+        {
+            if (RegisteredRangeEvents.Add(range.EventName))
+                CPH.RegisterCustomTrigger(range.Label, range.EventName, new[] { TriggerCategory });
+        }
+    }
+    private void TriggerDonation(Dictionary<string, object> donationArgs)
+    {
+        decimal converted = ParseAmount(Convert.ToString(donationArgs["daAmountConverted"], CultureInfo.InvariantCulture));
+        decimal rangeAmount = Math.Floor(converted > 0 ? converted : (decimal)donationArgs["daAmountNumber"]);
+
+        var matched = new List<DonationRange>();
+        foreach (var range in LoadRanges())
+        {
+            if (range.Contains(rangeAmount))
+                matched.Add(range);
+        }
+
+        var labels = new List<string>();
+        foreach (var range in matched)
+            labels.Add(range.Label);
+
+        donationArgs["daRangeAmount"] = rangeAmount;
+        donationArgs["daRange"] = string.Join(", ", labels);
+        CPH.TriggerCodeEvent(EventDonation, donationArgs);
+
+        foreach (var range in matched)
+        {
+            var rangeArgs = new Dictionary<string, object>(donationArgs);
+            rangeArgs["daRange"] = range.Label;
+            CPH.TriggerCodeEvent(range.EventName, rangeArgs);
+        }
     }
     public void Dispose()
     {
@@ -495,7 +554,7 @@ public class CPHInline
             {
                 var donationArgs = BuildDonationArgs(data);
                 Logger.Info(string.Format("Donation received: {0} {1}", donationArgs["daAmount"], donationArgs["daCurrency"]));
-                CPH.TriggerCodeEvent(EventDonation, donationArgs);
+                TriggerDonation(donationArgs);
             });
 
         var socketService = SocketService;
@@ -1069,10 +1128,94 @@ public class SocketService
     }
     
 }
+public class DonationRange
+{
+    public decimal Min { get; set; }
+    public decimal? Max { get; set; }
+
+    public string Label
+    {
+        get { return Max.HasValue ? FormatAmount(Min) + "-" + FormatAmount(Max.Value) : FormatAmount(Min) + "+"; }
+    }
+    public string EventName
+    {
+        get { return "daRange_" + Label.Replace("-", "_").Replace("+", "_plus").Replace(".", "p"); }
+    }
+    public bool Contains(decimal amount)
+    {
+        return amount >= Min && (!Max.HasValue || amount <= Max.Value);
+    }
+    public static string FormatAmount(decimal value)
+    {
+        return value.ToString("0.##", CultureInfo.InvariantCulture);
+    }
+    public static bool TryParseAmount(string text, out decimal value)
+    {
+        return decimal.TryParse((text ?? "").Trim().Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out value) && value >= 0;
+    }
+    public static bool TryCreate(string min, string max, out DonationRange range)
+    {
+        range = null;
+        if (!TryParseAmount(min, out decimal minValue))
+            return false;
+
+        if (string.IsNullOrWhiteSpace(max))
+        {
+            range = new DonationRange { Min = minValue };
+            return true;
+        }
+
+        if (!TryParseAmount(max, out decimal maxValue) || maxValue < minValue)
+            return false;
+
+        range = new DonationRange { Min = minValue, Max = maxValue };
+        return true;
+    }
+    public static List<DonationRange> ParseList(string text)
+    {
+        var result = new List<DonationRange>();
+        if (string.IsNullOrWhiteSpace(text))
+            return result;
+
+        foreach (var item in text.Split(new[] { ';', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            string value = item.Trim();
+            bool open = value.EndsWith("+");
+            int separator = value.IndexOf('-');
+            string min = open ? value.TrimEnd('+') : separator < 0 ? value : value.Substring(0, separator);
+            string max = open || separator < 0 ? "" : value.Substring(separator + 1);
+            if (TryCreate(min, max, out DonationRange range))
+                result.Add(range);
+        }
+        return Normalize(result);
+    }
+    public static List<DonationRange> Normalize(List<DonationRange> ranges)
+    {
+        var seen = new HashSet<string>();
+        var result = new List<DonationRange>();
+        foreach (var range in ranges)
+        {
+            if (seen.Add(range.Label))
+                result.Add(range);
+        }
+        result.Sort((a, b) => a.Min != b.Min ? a.Min.CompareTo(b.Min) : (a.Max ?? decimal.MaxValue).CompareTo(b.Max ?? decimal.MaxValue));
+        return result;
+    }
+    public static string Serialize(List<DonationRange> ranges)
+    {
+        var labels = new List<string>();
+        foreach (var range in ranges)
+            labels.Add(range.Label);
+
+        return string.Join(";", labels);
+    }
+}
 public class Service
 {
     public delegate string HandleCode(string code);
     public delegate void SaveCredentials(string clientId, string clientSecret);
+    public delegate List<DonationRange> LoadRanges();
+    public delegate void SaveRanges(List<DonationRange> ranges);
 
     private const string EndpointAuthorize = "/oauth/authorize";
     private const string EndpointToken = "/oauth/token";
@@ -1093,6 +1236,152 @@ public class Service
     public string SetupUrl
     {
         get { return Settings.RedirectUrl + "setup"; }
+    }
+    public string RangesUrl
+    {
+        get { return Settings.RedirectUrl + "ranges"; }
+    }
+    public void ServeRangesPage(int timeoutSeconds, LoadRanges loadRanges, SaveRanges saveRanges)
+    {
+        System.Timers.Timer forceCloseTimer = null;
+        try
+        {
+            Listener = new HttpListener();
+            Listener.Prefixes.Add(Settings.RedirectUrl);
+            Listener.Start();
+            Func<Task> func = new Func<Task>(async () => {
+                bool runServer = true;
+                while (runServer)
+                {
+                    HttpListenerContext context = await Listener.GetContextAsync();
+                    HttpListenerRequest request = context.Request;
+                    HttpListenerResponse resp = context.Response;
+
+                    if (!request.Url.AbsolutePath.TrimEnd('/').EndsWith("/ranges"))
+                    {
+                        resp.StatusCode = 404;
+                        resp.Close();
+                        continue;
+                    }
+
+                    if (request.HttpMethod != "POST")
+                    {
+                        WriteHtmlResponse(resp, BuildRangesPage(ToRows(loadRanges()), null, null));
+                        continue;
+                    }
+
+                    string body;
+                    using (var reader = new StreamReader(request.InputStream, Encoding.UTF8))
+                        body = reader.ReadToEnd();
+
+                    var form = ParseQuery(body);
+                    var rows = new List<string[]>();
+                    var ranges = new List<DonationRange>();
+                    var invalid = new List<string>();
+                    for (int i = 0; i < 200; i++)
+                    {
+                        string min = GetQueryValue(form, "min" + i).Trim();
+                        string max = GetQueryValue(form, "max" + i).Trim();
+                        if (min.Length == 0 && max.Length == 0)
+                            continue;
+
+                        rows.Add(new[] { min, max });
+                        if (DonationRange.TryCreate(min, max, out DonationRange range))
+                            ranges.Add(range);
+                        else
+                            invalid.Add(min + " - " + max);
+                    }
+
+                    if (invalid.Count > 0)
+                    {
+                        WriteHtmlResponse(resp, BuildRangesPage(rows, "Неверные диапазоны: " + string.Join("; ", invalid) + ". Ничего не сохранено.", null));
+                        continue;
+                    }
+
+                    saveRanges(DonationRange.Normalize(ranges));
+                    if (GetQueryValue(form, "action") == "done")
+                    {
+                        WriteHtmlResponse(resp, BuildRangesDonePage());
+                        runServer = false;
+                        continue;
+                    }
+
+                    WriteHtmlResponse(resp, BuildRangesPage(ToRows(loadRanges()), null, "Сохранено."));
+                }
+            });
+            Task listenTask = func.Invoke();
+            forceCloseTimer = new System.Timers.Timer(Math.Max(5, timeoutSeconds) * 1000);
+            forceCloseTimer.Elapsed += ForceCloseServer;
+            forceCloseTimer.AutoReset = false;
+            forceCloseTimer.Enabled = true;
+
+            listenTask.GetAwaiter().GetResult();
+        }
+        catch (HttpListenerException e)
+        {
+            Logger.Error("Ranges page stopped", e.Message);
+        }
+        catch (ObjectDisposedException)
+        {
+            Logger.Debug("Ranges page closed by timeout");
+        }
+        finally
+        {
+            if (forceCloseTimer != null)
+                forceCloseTimer.Dispose();
+            if (Listener != null)
+                Listener.Close();
+        }
+    }
+    private static List<string[]> ToRows(List<DonationRange> ranges)
+    {
+        var rows = new List<string[]>();
+        foreach (var range in ranges)
+            rows.Add(new[] { DonationRange.FormatAmount(range.Min), range.Max.HasValue ? DonationRange.FormatAmount(range.Max.Value) : "" });
+
+        return rows;
+    }
+    private string BuildRangesPage(List<string[]> rows, string error, string notice)
+    {
+        var rowsHtml = new StringBuilder();
+        for (int i = 0; i < rows.Count; i++)
+            rowsHtml.Append(BuildRangeRow(i, rows[i][0], rows[i][1]));
+
+        string messageHtml = !string.IsNullOrEmpty(error)
+            ? "<p style='color:#c0392b'>" + WebUtility.HtmlEncode(error) + "</p>"
+            : !string.IsNullOrEmpty(notice) ? "<p style='color:#27ae60'>" + WebUtility.HtmlEncode(notice) + "</p>" : "";
+
+        return @"<!doctype html>
+<html lang='ru'>
+<head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Диапазоны донатов</title>
+<style>body{font-family:Segoe UI,Arial,sans-serif;max-width:560px;margin:40px auto;padding:0 16px;color:#222}.row{display:flex;gap:8px;align-items:center;margin:6px 0}.row input{width:120px;padding:8px}button{padding:8px 14px;font-size:15px}.actions{margin-top:16px;display:flex;gap:8px}small{color:#666}</style>
+</head>
+<body>
+<h2>Диапазоны донатов</h2>
+<p>Каждый диапазон становится отдельным триггером в Streamer.bot: <b>Custom → DonationAlerts → 100-299</b>.</p>
+<small>Сумма берётся в валюте вашего аккаунта DonationAlerts, копейки отбрасываются. Границы включаются: 100-299 срабатывает на 100 и на 299. Пустое поле «до» — без верхней границы (1000+). Если диапазоны пересекаются, сработают все подходящие.</small>
+" + messageHtml + @"
+<form method='post'>
+<div id='rows'>" + rowsHtml + @"</div>
+<button type='button' onclick='addRow()'>+ Добавить диапазон</button>
+<div class='actions'><button type='submit' name='action' value='save'>Сохранить</button><button type='submit' name='action' value='done'>Сохранить и закрыть</button></div>
+</form>
+<p><small>Новые триггеры появляются сразу после сохранения. Удалённые пропадут из списка триггеров после перезапуска Streamer.bot.</small></p>
+<script>
+var next=" + rows.Count + @";
+function addRow(){var d=document.createElement('div');d.className='row';d.innerHTML=""от <input name='min""+next+""' inputmode='decimal'> до <input name='max""+next+""' inputmode='decimal' placeholder='без границы'> <button type='button' onclick='this.parentNode.remove()'>✕</button>"";document.getElementById('rows').appendChild(d);next++;}
+if(next===0)addRow();
+</script>
+</body>
+</html>";
+    }
+    private static string BuildRangeRow(int index, string min, string max)
+    {
+        return "<div class='row'>от <input name='min" + index + "' inputmode='decimal' value='" + WebUtility.HtmlEncode(min) + "'> до <input name='max" + index + "' inputmode='decimal' placeholder='без границы' value='" + WebUtility.HtmlEncode(max) + "'> <button type='button' onclick='this.parentNode.remove()'>✕</button></div>";
+    }
+    private static string BuildRangesDonePage()
+    {
+        return "<!doctype html><html lang='ru'><head><meta charset='UTF-8'><title>Диапазоны донатов</title></head><body style='font-family:Segoe UI,Arial,sans-serif;max-width:560px;margin:40px auto;padding:0 16px'><h2>Готово</h2><p>Диапазоны сохранены. Вкладку можно закрыть.</p></body></html>";
     }
     public bool ServeAndListenAuth(int timeoutSeconds, HandleCode Handler, SaveCredentials saveCredentials)
     {
