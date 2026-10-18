@@ -521,6 +521,8 @@ def validate_manifest(manifest, name):
             _require(_is_text(code.get(key)), "codes[].%s must be a non-empty string" % key)
         for key in ("precompile", "delayStart"):
             _require(isinstance(code.get(key), bool), "codes[].%s must be a boolean" % key)
+        _require("references" not in code or (isinstance(code["references"], list) and all(_is_text(r) for r in code["references"])),
+                 "codes[].references must be a list of strings")
         _require(code["key"] not in code_keys, "duplicate code key %s" % code["key"])
         code_keys[code["key"]] = 0
         source_path(code)
@@ -683,6 +685,8 @@ def _code_sub(entry, templates, spec, ids, index):
     set_existing(sub, "byteCode", embed_source(normalize_source(source_path(entry))), "code")
     set_existing(sub, "precompile", entry["precompile"], "code")
     set_existing(sub, "delayStart", entry["delayStart"], "code")
+    if "references" in entry:
+        set_existing(sub, "references", list(entry["references"]), "code")
     return sub
 
 

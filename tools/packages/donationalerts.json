@@ -1,0 +1,75 @@
+{
+  "package": "donationalerts",
+  "namespace": "6b0f8f8e-3c2a-4f57-9a43-2d5e8c1b7a10",
+  "golden": "tools/golden/golden-1.0.7.sb",
+  "out": "dist/donationalerts.sb",
+  "meta": {
+    "name": "DonationAlerts",
+    "author": "streamer.bot-donationAlerts",
+    "version": "2.0.0",
+    "description": "DonationAlerts donations for Streamer.bot. Restart Streamer.bot after import and fill the setup page."
+  },
+  "group": "DonationAlerts",
+  "templates": {
+    "action": "GOLDEN | Runtime",
+    "code": {"action": "GOLDEN | Runtime", "type": 99999},
+    "method": {"action": "GOLDEN | Call", "type": 99998, "code_ref_key": "executeCodeId", "method_key": "method"},
+    "queue": "Golden Queue"
+  },
+  "queues": [],
+  "codes": [
+    {
+      "key": "da",
+      "name": "DonationAlerts",
+      "source": "integration.cs",
+      "description": "DonationAlerts integration",
+      "precompile": true,
+      "delayStart": false,
+      "references": [
+        "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\mscorlib.dll",
+        "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\System.dll",
+        "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\System.Core.dll",
+        "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\System.Net.Http.dll",
+        ".\\Newtonsoft.Json.dll"
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "name": "DA | Code",
+      "subActions": [
+        {"kind": "code", "code": "da"}
+      ]
+    },
+    {
+      "name": "DA | Connect",
+      "subActions": [
+        {"kind": "method", "code": "da", "method": "Connect"}
+      ]
+    },
+    {
+      "name": "DA | Start",
+      "triggers": [
+        {"type": 706}
+      ],
+      "subActions": [
+        {"kind": "method", "code": "da", "method": "Start"}
+      ]
+    },
+    {
+      "name": "DA | Stop",
+      "subActions": [
+        {"kind": "method", "code": "da", "method": "Stop"}
+      ]
+    },
+    {
+      "name": "DA | On donation",
+      "triggers": [
+        {"type": 18002, "override": {"name": "DonationAlerts: Donation", "eventName": "daDonation"}}
+      ],
+      "subActions": [
+        {"kind": "method", "code": "da", "method": "ShowDonation"}
+      ]
+    }
+  ]
+}

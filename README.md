@@ -1,155 +1,57 @@
 ﻿# DonationAlerts для Streamer.bot
 
-Актуальная интеграция DonationAlerts для Streamer.bot с OAuth 2.0, автообновлением токенов и удобными аргументами для кастомных действий.
+Донаты из DonationAlerts приходят в Streamer.bot как триггер **DonationAlerts: Donation** с готовыми аргументами.
 
-**Что уже есть**
-- Автоматическое подключение через браузер
-- Подписка на донаты и цели через Centrifugo WebSocket
-- Больше аргументов для действий (донат, цель, метаданные)
-- Чистые логи и мягкий реконнект
-- Настройки через глобальные переменные
+## Установка
 
-## Быстрый старт: подключение
+1. В Streamer.bot: **Import** → выберите файл `donationalerts.sb` → Import.
+   Появится группа **DonationAlerts** с действиями `DA | Code`, `DA | Connect`, `DA | Start`, `DA | Stop`, `DA | On donation`.
+2. Перезапустите Streamer.bot. При старте сам откроется браузер со страницей подключения (10 минут на заполнение):
+   - создайте приложение на https://www.donationalerts.com/application/clients;
+   - в поле Redirect URL укажите `http://127.0.0.1:8554/donationalerts/callback/`;
+   - вставьте ID и API key приложения в форму и нажмите «Сохранить и авторизоваться»;
+   - подтвердите доступ на DonationAlerts.
+3. Всё. Приём донатов включается сам при каждом старте Streamer.bot. Если окно подключения закрылось раньше времени, просто перезапустите Streamer.bot ещё раз.
 
-1. Создайте приложение в DonationAlerts.
+Проверка: в DonationAlerts отправьте тестовое оповещение. В журнале Streamer.bot появится строка `-- Donation Alerts: <имя> <сумма> <валюта>: <сообщение>`.
 
-   Откройте:
-   https://www.donationalerts.com/application/clients
+## Как реагировать на донат
 
-2. Укажите URL перенаправления (Redirect URL).
+Добавляйте свои под-действия (сообщение в чат, TTS, OBS и т.д.) в действие **DA | On donation**. Можно также повесить триггер **Custom → DonationAlerts → DonationAlerts: Donation** на любое своё действие.
 
-   По умолчанию интеграция использует:
+Аргументы:
 
-   ```
-   http://127.0.0.1:8554/donationalerts/callback/
-   ```
+| Аргумент | Что это |
+| --- | --- |
+| `%daUsername%` | имя донатера (`Anonymous`, если не указано) |
+| `%daAmount%` | сумма, как пришла (`100`, `22.5`) |
+| `%daAmountNumber%` | сумма числом, для If/Else |
+| `%daCurrency%` | валюта (`RUB`, `USD`, ...) |
+| `%daAmountConverted%` | сумма в вашей валюте |
+| `%daMessage%` | текст сообщения |
+| `%daType%` | `text` или `audio` |
+| `%daAudioUrl%`, `%daAudio%` | ссылка на аудио-сообщение и путь к скачанному файлу |
+| `%daDonationId%`, `%daCreatedAt%` | id и время доната |
 
-   Если хотите другой адрес или порт, измените и в приложении, и в настройках ниже.
-
-3. Заполните глобальные переменные в Streamer.bot.
-
-   Минимум:
-   - `daClientId`
-   - `daClientSecret`
-
-4. Создайте действия в Streamer.bot.
-
-   Рекомендуемая схема:
-   - **DA | Connect** -> метод `Connect`
-   - **DA | Start** -> метод `Start` (запускать в фоне)
-   - **DA | Stop** -> метод `Stop`
-
-5. Запустите **DA | Connect**.
-
-   Откроется браузер. Завершите авторизацию.
-
-6. Запустите **DA | Start**.
-
-   Это включит прослушивание донатов и целей.
-
-## Настройки (глобальные переменные)
-
-| Переменная | Что делает | По умолчанию |
-| --- | --- | --- |
-| `daClientId` | ID клиента (Client ID) из DonationAlerts | обязательно |
-| `daClientSecret` | Секрет клиента (Client Secret) из DonationAlerts | обязательно |
-| `daRedirectUrl` | URL перенаправления (Redirect URL) для OAuth | `http://127.0.0.1:8554/donationalerts/callback/` |
-| `daScopes` | Области доступа OAuth (scopes) | `oauth-user-show oauth-donation-subscribe oauth-goal-subscribe` |
-| `daAuthTimeoutSeconds` | Таймаут ожидания авторизации | `90` |
-| `daReconnectDelaySeconds` | Пауза между реконнектами | `5` |
-| `daMaxReconnectAttempts` | Лимит реконнектов (0 = бесконечно) | `0` |
-| `daDownloadAudio` | Скачивать аудио-сообщения | `true` |
-| `daUserAgent` | Заголовок User-Agent для запросов | `StreamerBot-DonationAlerts/2.0` |
-| `daUpdateRepo` | Репозиторий для обновлений (`owner/repo`) | пусто |
-
-Токены сохраняются автоматически:
-- `daAccessToken`
-- `daRefreshToken`
-- `daAccessTokenExpiresAt`
-- `daSocketToken`
-- `daUserId`
-
-## Аргументы для обработчиков донатов
-
-Интеграция передает аргументы в действия, вызываемые при донате.
-
-**Основные**
-- `daDonationId`
-- `daDonationName`
-- `daDonationUsername`
-- `daDonationMessageType` (`text` или `audio`)
-- `daDonationMessage`
-- `daDonationAmount`
-- `daDonationCurrency`
-- `daDonationIsShown`
-- `daDonationCreatedAt`
-- `daDonationShownAt`
-- `daDonationReason`
-- `daDonationSeq`
-- `daDonationRaw` (JSON)
-
-**Совместимость со старой версией**
-- `daName`
-- `daUsername`
-- `daType`
-- `daMessage`
-- `daAmount`
-- `daCurrency`
-- `daAmountConverted`
-- `daAudioUrl`
-- `daAudio` (путь к файлу, если `daDownloadAudio = true`)
-
-## Аргументы для обновлений целей
-
-- `daGoalId`
-- `daGoalIsActive`
-- `daGoalIsDefault`
-- `daGoalTitle`
-- `daGoalCurrency`
-- `daGoalCurrent`
-- `daGoalTarget`
-- `daGoalReason`
-- `daGoalSeq`
-- `daGoalRaw` (JSON)
-
-## Имена действий по умолчанию
-
-Скрипт ищет эти действия в Streamer.bot:
-
-- `DonationHandler_Default`
-- `DonationHandler_GoalHandler`
-- `DonationHandler_After`
-
-Если хотите, добавьте действия с точной суммой доната:
-
-- `DonationHandler_100`
-- `DonationHandler_499.99`
-
-## Обновления
-
-Если хотите уведомления об обновлениях:
-
-1. Создайте действие **DA | Update Checker** с `updateChecker.cs`.
-2. Укажите репозиторий в `daUpdateRepo`, например:
-
-```
-my-org/streamerbot-donationalerts
-```
+Обновления целей приходят триггером **DonationAlerts: Goal updated** (`%daGoalTitle%`, `%daGoalCurrent%`, `%daGoalTarget%`, `%daGoalCurrency%`).
 
 ## Если что-то не работает
 
-- Проверьте, что URL перенаправления совпадает в DonationAlerts и в `daRedirectUrl`.
-- Убедитесь, что **DA | Start** запущен в фоне.
-- Проверьте scopes в `daScopes`.
-- Если авторизация не проходит, снова запустите **DA | Connect**.
+- Redirect URL в приложении DonationAlerts должен совпадать точно, со слешем в конце.
+- Порт 8554 должен быть свободен во время **DA | Connect**.
+- Авторизация слетела: удалите глобальную переменную `daAccessToken` и перезапустите Streamer.bot.
+- Остановить приём: **DA | Stop**.
 
----
+Внимание: экспорты и бэкапы Streamer.bot содержат ваши ключи и токены (глобальные переменные `daClientSecret`, `daAccessToken`, ...). Не выкладывайте их.
 
-Основано на старой версии play_code и полностью обновлено по актуальной документации DonationAlerts и Streamer.bot.
+## Для разработчика
 
-## Документация
+Код интеграции в `integration.cs`. Пакет собирается командой:
 
-- https://www.donationalerts.com/apidoc
-- https://docs.streamer.bot/api
-- https://docs.streamer.bot/api/csharp
+```
+python -I tools/build_sb.py build donationalerts --check
+```
 
+Результат: `dist/donationalerts.sb`. Офлайн-проверка компиляции: `python -I tools/compile_check.py`.
+
+Основано на версии play_code.
