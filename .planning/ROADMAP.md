@@ -36,7 +36,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The old shutdown hang is reproduced on purpose. With the spike's cancel-on-Dispose design, closing Streamer.bot while a background task and a pending listener are active logs `Cleaned up execute code instances` and `Streamer.bot exited`, and no `Streamer.bot.exe` stays in Task Manager *(live: user confirms)*.
   5. Spike findings are recorded in the repo, each marked "verified live" or "not verified": exit trigger existence, Dispose on recompile, Init vs Started ordering, custom trigger JSON shape, dictionary argument typing in If/Else, compiler language version, cross-AppDomain single-owner guard, and loopback listener under non-elevated Streamer.bot. The design decisions that follow from them are logged.
 
-**Plans:** 4/7 plans executed
+**Plans:** 6/7 plans executed
 
 Plans:
 **Wave 1**
@@ -48,8 +48,8 @@ Plans:
 - [x] 01-04-PLAN.md — Spike sources DaSpikeA/DaSpikeB: cancel-on-Dispose host and probes, compile-checked (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 01-05-PLAN.md — Template-driven builder + spike manifest to dist/spike.sb with round-trip check (wave 3)
-- [ ] 01-06-PLAN.md — Evidence extractor, findings checker, FINDINGS skeleton, Russian run sheet (wave 3)
+- [x] 01-05-PLAN.md — Template-driven builder + spike manifest to dist/spike.sb with round-trip check (wave 3)
+- [x] 01-06-PLAN.md — Evidence extractor, findings checker, FINDINGS skeleton, Russian run sheet (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 01-07-PLAN.md — Live session in Streamer.bot 1.0.7 and recorded findings and decisions (wave 4, user checkpoint)
@@ -144,7 +144,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Live Spikes & Build Harness | 4/7 | In Progress | - |
+| 1. Live Spikes & Build Harness | 6/7 | In Progress | - |
 | 2. Walking Skeleton | 0/TBD | Not started | - |
 | 3. Resilient Connection | 0/TBD | Not started | - |
 | 4. Reaction-Ready Events | 0/TBD | Not started | - |
