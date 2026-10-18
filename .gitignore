@@ -1,2 +1,5 @@
 .vs
 dist
+tools/compile-check/obj/
+tools/compile-check/bin/
+__pycache__/
