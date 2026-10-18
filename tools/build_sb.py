@@ -31,7 +31,23 @@ GUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 COMMON_SUBACTION_KEYS = {"id", "weight", "type", "parentId", "enabled", "index"}
-KNOWN_KEYS = {}
+# Key sets seen in the official 1.0.4 samples (01-RESEARCH.md Pattern 4). Keys outside them are
+# only listed as REVIEW lines; the explicit allow-listing is a human decision (01-03 checkpoint).
+KNOWN_KEYS = {
+    "top": {"meta", "data", "version", "exportedFrom", "minimumVersion"},
+    "meta": {"name", "author", "version", "description", "autoRunAction", "minimumVersion"},
+    "data": {"actions", "queues", "commands", "websocketServers", "websocketClients", "timers"},
+    "action": {
+        "id", "queue", "enabled", "excludeFromHistory", "excludeFromPending", "name", "group",
+        "alwaysRun", "randomAction", "concurrent", "triggers", "subActions", "collapsedGroups",
+    },
+    "subaction:99999": {
+        "name", "description", "references", "byteCode", "precompile", "delayStart",
+        "saveResultToVariable", "saveToVariable",
+    } | COMMON_SUBACTION_KEYS,
+    "subaction:120": {"input", "operation", "value", "autoType", "subActions"} | COMMON_SUBACTION_KEYS,
+    "subaction:99900": {"name", "color", "random", "subActions"} | COMMON_SUBACTION_KEYS,
+}
 DEFAULT_ALLOWED_PREFIXES = ("GOLDEN |", "SPIKE |")
 
 
@@ -287,6 +303,130 @@ def diff_ids(model_a, model_b):
     return lines
 
 
+FORBIDDEN_COLLECTIONS = ("commands", "websocketServers", "websocketClients", "timers")
+
+_SECRET_RULES = (
+    ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.")),
+    ("bearer", re.compile(r"Bearer\s")),
+    ("client_secret", re.compile(r"client_secret", re.IGNORECASE)),
+    ("access_token", re.compile(r"access_token", re.IGNORECASE)),
+    ("refresh_token", re.compile(r"refresh_token", re.IGNORECASE)),
+    ("oauth-token", re.compile(r"oauth:")),
+    ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
+    ("user-profile-path", re.compile(r"[A-Za-z]:[\\/]+Users[\\/]", re.IGNORECASE)),
+)
+_ANY_GUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+_LONG_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_-]{32,}")
+
+
+def _mask(match_text):
+    """First 3 characters plus the length; never the whole match."""
+    return "%s…len=%d" % (match_text[:3], len(match_text))
+
+
+def _scan_text(text):
+    """Return [(rule, masked preview)] with at most one entry per rule."""
+    hits = []
+    for rule, pattern in _SECRET_RULES:
+        found = pattern.search(text)
+        if found:
+            hits.append((rule, _mask(found.group(0))))
+    without_guids = _ANY_GUID_RE.sub(" ", text)
+    for found in _LONG_TOKEN_RE.finditer(without_guids):
+        if len(set(found.group(0))) > 2:
+            hits.append(("long-token", _mask(found.group(0))))
+            break
+    return hits
+
+
+def _safe(value):
+    """Display text for REVIEW/INFO lines: redacted when it looks like a secret, shortened otherwise."""
+    text = str(value).replace("\r", " ").replace("\n", " ")
+    if _scan_text(text):
+        return "<redacted: matches a secret rule>"
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def _walk_sub_actions(subs):
+    for sub in subs or []:
+        if isinstance(sub, dict):
+            yield sub
+            yield from _walk_sub_actions(sub.get("subActions"))
+
+
+def _type_set(values):
+    return ",".join(str(v) for v in sorted(values, key=lambda v: (not isinstance(v, int), v if isinstance(v, int) else str(v))))
+
+
+def audit_findings(model, allowed_prefixes):
+    """Return (hard, review, info) line lists for the secret and shape audit."""
+    hard, review, info = [], [], []
+    prefixes = tuple(allowed_prefixes)
+    data = model.get("data") if isinstance(model.get("data"), dict) else {}
+    meta = model.get("meta") if isinstance(model.get("meta"), dict) else {}
+    actions = [a for a in (data.get("actions") or []) if isinstance(a, dict)]
+    queues = [q for q in (data.get("queues") or []) if isinstance(q, dict)]
+
+    for key in FORBIDDEN_COLLECTIONS:
+        value = data.get(key)
+        if value:
+            size = len(value) if hasattr(value, "__len__") else 1
+            hard.append("HARD structure:non-empty-%s $.data.%s: %d item(s)" % (key, key, size))
+    for index, action in enumerate(data.get("actions") or []):
+        name = action.get("name") if isinstance(action, dict) else None
+        if not isinstance(name, str) or not name.startswith(prefixes):
+            hard.append("HARD structure:action-prefix $.data.actions[%d].name: %s" % (index, _safe(name)))
+
+    for path, key, value in iter_nodes(model):
+        if not isinstance(value, str):
+            continue
+        shown_path = path
+        text = value
+        if key == "byteCode":
+            try:
+                text = decode_bytecode(value)
+            except SbFormatError:
+                hard.append("HARD structure:bytecode-undecodable %s: byteCode cannot be decoded, so it cannot be audited" % path)
+                continue
+            shown_path = path + "(decoded)"
+        for rule, masked in _scan_text(text):
+            hard.append("HARD secret:%s %s: %s" % (rule, shown_path, masked))
+
+    review.append("REVIEW meta.author=%s" % _safe(meta.get("author")))
+    for queue in queues:
+        review.append("REVIEW queue=%s" % _safe(queue.get("name")))
+
+    def unknown(kind, obj):
+        known = KNOWN_KEYS.get(kind, set())
+        for key in obj:
+            if key not in known:
+                review.append("REVIEW unknown-key %s %s" % (kind, _safe(key)))
+
+    unknown("top", model)
+    unknown("meta", meta)
+    unknown("data", data)
+    for queue in queues:
+        unknown("queue", queue)
+    sub_types, trigger_types = set(), set()
+    for action in actions:
+        unknown("action", action)
+        for trigger in action.get("triggers") or []:
+            if isinstance(trigger, dict):
+                trigger_types.add(trigger.get("type"))
+                unknown("trigger:%s" % trigger.get("type"), trigger)
+        for sub in _walk_sub_actions(action.get("subActions")):
+            sub_types.add(sub.get("type"))
+            unknown("subaction:%s" % sub.get("type"), sub)
+
+    info.append("INFO version=%s exportedFrom=%s minimumVersion=%s" % (
+        _safe(model.get("version")), _safe(model.get("exportedFrom")), _safe(model.get("minimumVersion"))))
+    info.append("INFO meta.name=%s" % _safe(meta.get("name")))
+    info.append("INFO actions=%d %s" % (len(actions), "; ".join(_safe(a.get("name")) for a in actions)))
+    info.append("INFO subActionTypes=%s" % _type_set(sub_types))
+    info.append("INFO triggerTypes=%s" % _type_set(trigger_types))
+    return hard, review, info
+
+
 def _pretty_copy(model):
     shown = copy.deepcopy(model)
     _replace_bytecode(shown)
@@ -348,6 +488,16 @@ def _cmd_diff_ids(args):
     return 0
 
 
+def _cmd_audit(args):
+    model, _ = read_sb(args.file)
+    prefixes = DEFAULT_ALLOWED_PREFIXES + tuple(args.allow_prefix or ())
+    hard, review, info = audit_findings(model, prefixes)
+    for line in info + review + hard:
+        print(line)
+    print("audit: %d hard, %d review" % (len(hard), len(review)))
+    return 1 if hard else 0
+
+
 def _build_parser():
     parser = argparse.ArgumentParser(prog="build_sb.py", description="Streamer.bot .sb codec and safety tooling")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -363,6 +513,11 @@ def _build_parser():
     diff.add_argument("a")
     diff.add_argument("b")
     diff.set_defaults(func=_cmd_diff_ids)
+    audit = sub.add_parser("audit", help="secret and shape audit; findings are masked, never the full value")
+    audit.add_argument("file")
+    audit.add_argument("--allow-prefix", action="append", metavar="PREFIX",
+                       help="additional allowed action-name prefix (defaults: %s)" % ", ".join(DEFAULT_ALLOWED_PREFIXES))
+    audit.set_defaults(func=_cmd_audit)
     return parser
 
 
