@@ -2,7 +2,7 @@
   "package": "donationalerts",
   "namespace": "6b0f8f8e-3c2a-4f57-9a43-2d5e8c1b7a10",
   "golden": "tools/golden/golden-1.0.7.sb",
-  "out": "dist/donationalerts.sb",
+  "out": "donationalerts.sb",
   "meta": {
     "name": "DonationAlerts",
     "author": "streamer.bot-donationAlerts",
@@ -44,7 +44,7 @@
     {
       "name": "DA | Connect",
       "subActions": [
-        {"kind": "method", "code": "da", "method": "Connect"}
+        {"kind": "method", "code": "da", "method": "Reconnect"}
       ]
     },
     {

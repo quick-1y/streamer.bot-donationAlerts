@@ -488,7 +488,7 @@ def validate_manifest(manifest, name):
     except (ValueError, AttributeError, TypeError):
         raise _manifest_error("namespace must be a UUID string")
     _contained(manifest["golden"], REPO_ROOT, "golden")
-    _contained(manifest["out"], REPO_ROOT / "dist", "out")
+    _contained(manifest["out"], REPO_ROOT, "out")
     meta = manifest["meta"]
     _require(isinstance(meta, dict), "meta must be an object")
     for key in ("name", "author", "version", "description"):

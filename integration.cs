@@ -117,7 +117,7 @@ public class CPHInline
         if (!ObtainAccessToken())
             return false;
 
-        Logger.Info("Connected. Run 'DA | Start' or restart Streamer.bot to start receiving donations.");
+        Logger.Info("Connected");
         return true;
     }
     public bool Start()
@@ -134,7 +134,11 @@ public class CPHInline
             return false;
 
         if (!EnsureAccessToken())
-            return false;
+        {
+            Logger.Info("Authorization has expired, opening the connection page");
+            if (!Connect() || !EnsureAccessToken())
+                return false;
+        }
 
         return DonationCheckerLoop();
     }
@@ -144,10 +148,24 @@ public class CPHInline
         Logger.Info(string.Format("{0} {1} {2}: {3}", GetArgString("daUsername"), GetArgString("daAmount"), GetArgString("daCurrency"), GetArgString("daMessage")));
         return true;
     }
+    public bool Reconnect()
+    {
+        EnsureInitialized();
+        Stop();
+        if (!Connect())
+            return false;
+
+        return Start();
+    }
     public bool Stop()
     {
         EnsureInitialized();
-        SocketService.Close();
+        if (SocketService != null)
+            SocketService.Close();
+
+        if (WatcherTask != null && !WatcherTask.Wait(TimeSpan.FromSeconds(5)))
+            Logger.Debug("Watcher is still stopping");
+
         Logger.Info("Stopped");
         return true;
     }
@@ -305,7 +323,7 @@ public class CPHInline
         if (missing.Count > 0)
         {
             Logger.Error("Missing required settings: " + string.Join(", ", missing));
-            Logger.Info("DonationAlerts is not configured yet. Run 'DA | Connect' first.");
+            Logger.Info("DonationAlerts is not configured yet. Restart Streamer.bot to open the connection page.");
             return false;
         }
 
@@ -425,7 +443,7 @@ public class CPHInline
         var profileInfo = FetchProfileInfo();
         if (profileInfo == null)
         {
-            Logger.Info("DonationAlerts is not authorized. Run 'DA | Connect' first.");
+            Logger.Info("DonationAlerts is not authorized. Run '!daconnect' or restart Streamer.bot.");
             return false;
         }
 
@@ -447,7 +465,7 @@ public class CPHInline
             })
             .On(SocketService.EventAuthError, delegate (string eventName, Dictionary<string, string> data)
             {
-                Logger.Error("DonationAlerts authorization failed. Run 'DA | Connect' again.");
+                Logger.Error("DonationAlerts authorization failed. Run '!daconnect' or restart Streamer.bot.");
             })
             .On(SocketService.EventGoalUpdated, delegate (string eventName, Dictionary<string, string> data)
             {
