@@ -1,0 +1,34 @@
+{
+  "_source": "Shapes copied from a real Streamer.bot 1.0.7 export (version 24): MineFrostID/osu-beatmap-request-module README.md. Values blanked; the builder fills them.",
+  "exportedFrom": "1.0.7",
+  "version": 24,
+  "command": {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "name": "",
+    "enabled": false,
+    "include": true,
+    "mode": 0,
+    "command": "",
+    "regexExplicitCapture": false,
+    "location": 0,
+    "ignoreBotAccount": true,
+    "ignoreInternal": true,
+    "sources": 1025,
+    "persistCounter": false,
+    "persistUserCounter": false,
+    "caseSensitive": false,
+    "globalCooldown": 0,
+    "userCooldown": 0,
+    "group": "",
+    "grantType": 0,
+    "permittedUsers": [],
+    "permittedGroups": []
+  },
+  "trigger": {
+    "commandId": "00000000-0000-0000-0000-000000000001",
+    "id": "00000000-0000-0000-0000-000000000002",
+    "type": 401,
+    "enabled": true,
+    "exclusions": []
+  }
+}

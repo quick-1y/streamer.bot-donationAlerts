@@ -123,6 +123,9 @@ public class CPHInline
     public bool Start()
     {
         EnsureInitialized();
+        if (!IsBroadcasterOrInternal())
+            return false;
+
         if (string.IsNullOrWhiteSpace(CPH.GetGlobalVar<string>("daAccessToken")))
         {
             Logger.Info("Not connected yet, opening the connection page");
@@ -142,6 +145,17 @@ public class CPHInline
 
         return DonationCheckerLoop();
     }
+    private bool IsBroadcasterOrInternal()
+    {
+        if (args == null || !args.ContainsKey("role") || args["role"] == null)
+            return true;
+
+        if (int.TryParse(args["role"].ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int role) && role >= 4)
+            return true;
+
+        Logger.Info("Command ignored: only the broadcaster can use it");
+        return false;
+    }
     public bool ShowDonation()
     {
         EnsureInitialized();
@@ -151,6 +165,9 @@ public class CPHInline
     public bool Reconnect()
     {
         EnsureInitialized();
+        if (!IsBroadcasterOrInternal())
+            return false;
+
         Stop();
         if (!Connect())
             return false;
@@ -160,6 +177,9 @@ public class CPHInline
     public bool Stop()
     {
         EnsureInitialized();
+        if (!IsBroadcasterOrInternal())
+            return false;
+
         if (SocketService != null)
             SocketService.Close();
 

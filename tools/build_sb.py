@@ -371,7 +371,7 @@ def audit_findings(model, allowed_prefixes):
 
     for key in FORBIDDEN_COLLECTIONS:
         value = data.get(key)
-        if value:
+        if value and key != "commands":
             size = len(value) if hasattr(value, "__len__") else 1
             hard.append("HARD structure:non-empty-%s $.data.%s: %d item(s)" % (key, key, size))
     for index, action in enumerate(data.get("actions") or []):
@@ -527,6 +527,17 @@ def validate_manifest(manifest, name):
         code_keys[code["key"]] = 0
         source_path(code)
 
+    command_keys = set()
+    if "commands" in manifest:
+        _contained(manifest.get("command_template"), REPO_ROOT, "command_template")
+        _require(isinstance(manifest["commands"], list), "commands must be a list")
+        for command in manifest["commands"]:
+            _require(isinstance(command, dict), "each command must be an object")
+            for key in ("key", "name", "command"):
+                _require(_is_text(command.get(key)), "commands[].%s must be a non-empty string" % key)
+            _require(command["key"] not in command_keys, "duplicate command key %s" % command["key"])
+            command_keys.add(command["key"])
+
     _require(isinstance(manifest["actions"], list) and manifest["actions"], "actions must be a non-empty list")
     allowed = {"name", "optional", "queue", "triggers", "subActions", "template_action", "trigger_override", "append_subActions"}
     names = set()
@@ -544,6 +555,7 @@ def validate_manifest(manifest, name):
         for trigger in action.get("triggers") or []:
             _require(isinstance(trigger, dict) and isinstance(trigger.get("type"), int), "action %s has a trigger without an integer type" % action["name"])
             _require(isinstance(trigger.get("override", {}), dict), "action %s trigger override must be an object" % action["name"])
+            _require("command" not in trigger or trigger["command"] in command_keys, "action %s uses an unknown command key" % action["name"])
         for sub in list(action.get("subActions") or []) + list(action.get("append_subActions") or []):
             _require(isinstance(sub, dict) and sub.get("kind") in ("code", "method"), "action %s has a sub-action with an unknown kind" % action["name"])
             _require(sub.get("code") in code_keys, "action %s references unknown code %r" % (action["name"], sub.get("code")))
@@ -728,8 +740,35 @@ def _build_triggers(entry, templates, ids):
         set_existing(trigger, "id", ids.get("trigger", entry["name"], str(index)), kind)
         for key, value in (trigger_entry.get("override") or {}).items():
             set_existing(trigger, key, value, kind)
+        if "command" in trigger_entry:
+            set_existing(trigger, "commandId", ids.get("command", trigger_entry["command"]), kind)
         triggers.append(trigger)
     return triggers
+
+
+def _load_command_template(manifest):
+    """Command and command-trigger shapes from a real export, kept next to the golden."""
+    path = REPO_ROOT / manifest["command_template"]
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            template = json.load(handle)
+    except (OSError, ValueError):
+        raise SbFormatError("command template not readable: %s" % manifest["command_template"])
+    if not isinstance(template.get("command"), dict) or not isinstance(template.get("trigger"), dict):
+        raise SbFormatError("command template needs command and trigger objects")
+    return template
+
+
+def _build_command(entry, manifest, template, ids):
+    command = copy.deepcopy(template["command"])
+    set_existing(command, "id", ids.get("command", entry["key"]), "command")
+    set_existing(command, "name", entry["name"], "command")
+    set_existing(command, "command", entry["command"], "command")
+    set_existing(command, "group", manifest["group"], "command")
+    set_existing(command, "enabled", False, "command")
+    if "sources" in entry:
+        set_existing(command, "sources", entry["sources"], "command")
+    return command
 
 
 def _replace_strings(node, mapping):
@@ -804,6 +843,12 @@ def build_model(manifest, templates, skipped=None):
         queues.append(_build_queue(entry, templates, manifest["templates"], ids))
         queue_ids[entry["key"]] = ids.get("queue", entry["name"])
 
+    commands = []
+    if manifest.get("commands"):
+        command_template = _load_command_template(manifest)
+        templates.triggers.setdefault(command_template["trigger"]["type"], command_template["trigger"])
+        commands = [_build_command(entry, manifest, command_template, ids) for entry in manifest["commands"]]
+
     actions = []
     for entry in manifest["actions"]:
         local = _Ids(manifest["namespace"], manifest["package"])
@@ -821,6 +866,7 @@ def build_model(manifest, templates, skipped=None):
         ids.names.update(local.names)
     set_existing(model["data"], "queues", queues, "data")
     set_existing(model["data"], "actions", actions, "data")
+    set_existing(model["data"], "commands", commands, "data")
     dangling = _dangling_golden_ids(model, templates)
     if dangling:
         raise SbFormatError("dangling golden id at %s" % dangling[0])

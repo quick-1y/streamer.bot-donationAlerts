@@ -17,6 +17,12 @@
     "queue": "Golden Queue"
   },
   "queues": [],
+  "command_template": "tools/golden/command-1.0.7.json",
+  "commands": [
+    {"key": "connect", "name": "DA Connect", "command": "!daconnect"},
+    {"key": "start", "name": "DA Start", "command": "!dastart"},
+    {"key": "stop", "name": "DA Stop", "command": "!dastop"}
+  ],
   "codes": [
     {
       "key": "da",
@@ -43,6 +49,9 @@
     },
     {
       "name": "DA | Connect",
+      "triggers": [
+        {"type": 401, "command": "connect"}
+      ],
       "subActions": [
         {"kind": "method", "code": "da", "method": "Reconnect"}
       ]
@@ -50,7 +59,8 @@
     {
       "name": "DA | Start",
       "triggers": [
-        {"type": 706}
+        {"type": 706},
+        {"type": 401, "command": "start"}
       ],
       "subActions": [
         {"kind": "method", "code": "da", "method": "Start"}
@@ -58,6 +68,9 @@
     },
     {
       "name": "DA | Stop",
+      "triggers": [
+        {"type": 401, "command": "stop"}
+      ],
       "subActions": [
         {"kind": "method", "code": "da", "method": "Stop"}
       ]
