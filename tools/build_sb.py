@@ -23,6 +23,7 @@ import zlib
 from pathlib import Path
 
 MAGIC = b"SBAE"
+BOM = b"\xef\xbb\xbf"
 MAX_INPUT_BYTES = 64 * 1024 * 1024
 MAX_DECODED_BYTES = 64 * 1024 * 1024
 NULL_GUID = "00000000-0000-0000-0000-000000000000"
@@ -49,24 +50,48 @@ def pack(obj):
 
 
 def unpack_bytes(raw, max_bytes=MAX_DECODED_BYTES):
-    """Return the decoded JSON bytes of a .sb payload."""
+    """Return the decoded JSON bytes of a .sb payload, enforcing hard limits.
+
+    Rejects: input over MAX_INPUT_BYTES, invalid base64, a missing SBAE magic,
+    output over max_bytes (exactly max_bytes is accepted), a truncated gzip
+    stream, data after the gzip member, a UTF-8 BOM and invalid UTF-8.
+    """
+    raw = bytes(raw)
+    if len(raw) > MAX_INPUT_BYTES:
+        raise SbFormatError("input is larger than %d bytes" % MAX_INPUT_BYTES)
     try:
-        payload = base64.b64decode(bytes(raw).strip(), validate=True)
+        payload = base64.b64decode(b"".join(raw.split()), validate=True)
     except (binascii.Error, ValueError) as e:
         raise SbFormatError("invalid base64") from e
     if payload[:4] != MAGIC:
         raise SbFormatError("missing SBAE magic")
+    decompressor = zlib.decompressobj(31)
     try:
-        return gzip.decompress(payload[4:])
-    except (OSError, EOFError, zlib.error) as e:
+        out = decompressor.decompress(payload[4:], max_bytes + 1)
+    except zlib.error as e:
         raise SbFormatError("invalid gzip stream") from e
+    if len(out) > max_bytes or decompressor.unconsumed_tail:
+        raise SbFormatError("decompressed size exceeds %d bytes" % max_bytes)
+    if not decompressor.eof:
+        raise SbFormatError("truncated gzip stream")
+    if decompressor.unused_data:
+        raise SbFormatError("trailing data after the gzip member")
+    if out.startswith(BOM):
+        raise SbFormatError("JSON starts with a UTF-8 BOM")
+    try:
+        out.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise SbFormatError("payload is not valid UTF-8") from e
+    return out
 
 
 def unpack(raw):
+    """Return the model (a dict) of a .sb payload."""
+    json_bytes = unpack_bytes(raw)
     try:
-        model = json.loads(unpack_bytes(raw).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        raise SbFormatError("payload is not valid UTF-8 JSON") from e
+        model = json.loads(json_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, RecursionError) as e:
+        raise SbFormatError("payload is not valid JSON") from e
     if not isinstance(model, dict):
         raise SbFormatError("top-level JSON value is not an object")
     return model
@@ -74,7 +99,10 @@ def unpack(raw):
 
 def read_sb(path):
     """Return (model, decoded JSON bytes) for the .sb file at path."""
-    raw = Path(path).read_bytes()
+    path = Path(path)
+    if path.stat().st_size > MAX_INPUT_BYTES:
+        raise SbFormatError("file is larger than %d bytes" % MAX_INPUT_BYTES)
+    raw = path.read_bytes()
     json_bytes = unpack_bytes(raw)
     return unpack(raw), json_bytes
 
@@ -99,6 +127,164 @@ def iter_nodes(obj, path="$"):
             child = "%s[%d]" % (path, index)
             yield child, index, value
             yield from iter_nodes(value, child)
+
+
+CHECK_NAMES = ("roundtrip", "utf8-no-bom", "ids-format", "ids-unique", "refs-resolve", "bytecode-utf8")
+
+
+def _hard(name, path, reason):
+    return "HARD check:%s %s: %s" % (name, path, reason)
+
+
+def _check_roundtrip(model, json_bytes):
+    try:
+        reparsed = json.loads(json_bytes.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return [_hard("roundtrip", "$", "decoded bytes are not valid JSON")]
+    if dump(reparsed) != json_bytes:
+        return [_hard("roundtrip", "$", "decoded bytes differ from the canonical serialization")]
+    return []
+
+
+def _check_utf8_no_bom(model, json_bytes):
+    findings = []
+    if json_bytes.startswith(BOM):
+        findings.append(_hard("utf8-no-bom", "$", "JSON starts with a UTF-8 BOM"))
+    try:
+        json_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        findings.append(_hard("utf8-no-bom", "$", "JSON is not valid UTF-8"))
+    return findings
+
+
+def _id_nodes(model):
+    return [(path, value) for path, key, value in iter_nodes(model) if key == "id"]
+
+
+def _check_ids_format(model, json_bytes):
+    findings = []
+    for path, value in _id_nodes(model):
+        if not isinstance(value, str) or not GUID_RE.match(value):
+            findings.append(_hard("ids-format", path, "id is not a lowercase 8-4-4-4-12 GUID string"))
+        elif value == NULL_GUID:
+            findings.append(_hard("ids-format", path, "id is the null GUID"))
+    return findings
+
+
+def _check_ids_unique(model, json_bytes):
+    seen = {}
+    findings = []
+    for path, value in _id_nodes(model):
+        if not isinstance(value, str):
+            continue
+        if value in seen:
+            findings.append(_hard("ids-unique", path, "duplicate id (first seen at %s)" % seen[value]))
+        else:
+            seen[value] = path
+    return findings
+
+
+def _check_refs_resolve(model, json_bytes):
+    ids = {value for _, value in _id_nodes(model) if isinstance(value, str)}
+    findings = []
+    for path, key, value in iter_nodes(model):
+        if key == "id" or not isinstance(value, str) or not GUID_RE.match(value):
+            continue
+        if value != NULL_GUID and value not in ids:
+            findings.append(_hard("refs-resolve", path, "GUID does not resolve to an id in this file"))
+    return findings
+
+
+def _check_bytecode_utf8(model, json_bytes):
+    findings = []
+    for path, key, value in iter_nodes(model):
+        if key != "byteCode" or value is None:
+            continue
+        try:
+            if not isinstance(value, str):
+                raise SbFormatError("byteCode is not a string")
+            decode_bytecode(value)
+        except SbFormatError:
+            findings.append(_hard("bytecode-utf8", path, "byteCode is not valid base64 UTF-8"))
+    return findings
+
+
+_CHECKS = (
+    ("roundtrip", _check_roundtrip),
+    ("utf8-no-bom", _check_utf8_no_bom),
+    ("ids-format", _check_ids_format),
+    ("ids-unique", _check_ids_unique),
+    ("refs-resolve", _check_refs_resolve),
+    ("bytecode-utf8", _check_bytecode_utf8),
+)
+
+
+def structural_findings(model, json_bytes):
+    """HARD lines for the generic structural checks; empty when the model is clean."""
+    findings = []
+    for _, check in _CHECKS:
+        findings.extend(check(model, json_bytes))
+    return findings
+
+
+def _index_objects(model):
+    """Map diff keys (action:, queue:, sub:, trigger:) to the object id."""
+    index = {}
+
+    def put(key, obj):
+        unique = key
+        copy_number = 1
+        while unique in index:
+            copy_number += 1
+            unique = "%s~%d" % (key, copy_number)
+        index[unique] = obj.get("id")
+
+    def walk_subs(subs, action_name, counter):
+        for sub in subs or []:
+            if not isinstance(sub, dict):
+                continue
+            put("sub:%s#%d" % (action_name, counter[0]), sub)
+            counter[0] += 1
+            walk_subs(sub.get("subActions"), action_name, counter)
+
+    data = model.get("data") if isinstance(model.get("data"), dict) else {}
+    for queue in data.get("queues") or []:
+        if isinstance(queue, dict):
+            put("queue:%s" % queue.get("name"), queue)
+    for action in data.get("actions") or []:
+        if not isinstance(action, dict):
+            continue
+        name = action.get("name")
+        put("action:%s" % name, action)
+        for position, trigger in enumerate(action.get("triggers") or []):
+            if isinstance(trigger, dict):
+                put("trigger:%s#%d" % (name, position), trigger)
+        walk_subs(action.get("subActions"), name, [0])
+    return index
+
+
+def diff_ids(model_a, model_b):
+    """Compare object ids between two models; the last line is the summary."""
+    a = _index_objects(model_a)
+    b = _index_objects(model_b)
+    lines = []
+    counts = {"same": 0, "changed": 0, "only_a": 0, "only_b": 0}
+    for key, id_a in a.items():
+        if key not in b:
+            lines.append("ONLY-A %s" % key)
+            counts["only_a"] += 1
+        elif b[key] == id_a:
+            lines.append("SAME %s" % key)
+            counts["same"] += 1
+        else:
+            lines.append("CHANGED %s %s -> %s" % (key, id_a, b[key]))
+            counts["changed"] += 1
+    for key in b:
+        if key not in a:
+            lines.append("ONLY-B %s" % key)
+            counts["only_b"] += 1
+    lines.append("diff-ids: same=%(same)d changed=%(changed)d only_a=%(only_a)d only_b=%(only_b)d" % counts)
+    return lines
 
 
 def _pretty_copy(model):
@@ -139,6 +325,29 @@ def _cmd_decode(args):
     return 0
 
 
+def _cmd_check(args):
+    model, json_bytes = read_sb(args.file)
+    failed = 0
+    hard_lines = []
+    for name, check in _CHECKS:
+        found = check(model, json_bytes)
+        print("%s check:%s" % ("FAIL" if found else "PASS", name))
+        failed += 1 if found else 0
+        hard_lines.extend(found)
+    for line in hard_lines:
+        print(line)
+    print("check: %d failed" % failed)
+    return 1 if failed else 0
+
+
+def _cmd_diff_ids(args):
+    model_a, _ = read_sb(args.a)
+    model_b, _ = read_sb(args.b)
+    for line in diff_ids(model_a, model_b):
+        print(line)
+    return 0
+
+
 def _build_parser():
     parser = argparse.ArgumentParser(prog="build_sb.py", description="Streamer.bot .sb codec and safety tooling")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -147,6 +356,13 @@ def _build_parser():
     decode.add_argument("--pretty", action="store_true", help="replace each byteCode by its decoded source (display only)")
     decode.add_argument("--out", help="write the JSON to this path instead of stdout")
     decode.set_defaults(func=_cmd_decode)
+    check = sub.add_parser("check", help="generic structural checks (canonical form, ids, references)")
+    check.add_argument("file")
+    check.set_defaults(func=_cmd_check)
+    diff = sub.add_parser("diff-ids", help="compare object ids between two .sb files (informational)")
+    diff.add_argument("a")
+    diff.add_argument("b")
+    diff.set_defaults(func=_cmd_diff_ids)
     return parser
 
 
@@ -157,6 +373,9 @@ def main(argv=None):
         return args.func(args)
     except SbFormatError as e:
         sys.stderr.write("ERROR %s\n" % e)
+        return 2
+    except OSError as e:
+        sys.stderr.write("ERROR cannot read file: %s\n" % e.strerror)
         return 2
 
 

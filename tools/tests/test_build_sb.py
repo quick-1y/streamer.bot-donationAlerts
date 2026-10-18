@@ -249,7 +249,7 @@ class CheckTests(unittest.TestCase):
         self.assertIn("FAIL check:ids-unique", out)
 
     def test_check_flags_malformed_and_uppercase_ids(self):
-        for bad in ("not-a-guid", ACTION_ID.upper(), build_sb.NULL_GUID):
+        for bad in ("not-a-guid", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", build_sb.NULL_GUID):
             model = make_model()
             model["data"]["actions"][0]["subActions"][0]["id"] = bad
             code, out, _ = check_model(model)
