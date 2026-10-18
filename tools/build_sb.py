@@ -431,7 +431,9 @@ def audit_findings(model, allowed_prefixes):
 
 PACKAGES_DIR = REPO_ROOT / "tools" / "packages"
 PACKAGE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-BUILD_CHECK_NAMES = ("roundtrip", "model", "bytecode", "no-bom", "deterministic")
+BUILD_CHECK_NAMES = (
+    "roundtrip", "model", "bytecode", "no-bom", "deterministic", "keysets", "ids", "refs", "methods-exist",
+)
 MAX_FINDINGS_PER_CHECK = 10
 
 
@@ -709,9 +711,74 @@ def _build_plain_action(entry, manifest, templates, queue_ids, ids):
             subs.append(_code_sub(codes[sub_entry["code"]], templates, spec, ids, index))
         else:
             subs.append(_method_sub(sub_entry, templates, spec, ids, index, name))
-    set_existing(action, "triggers", [], "action")
+    set_existing(action, "triggers", _build_triggers(entry, templates, ids), "action")
     set_existing(action, "subActions", subs, "action")
     return action
+
+
+def _build_triggers(entry, templates, ids):
+    triggers = []
+    for index, trigger_entry in enumerate(entry.get("triggers") or []):
+        kind = "trigger:%s" % trigger_entry["type"]
+        trigger = copy.deepcopy(templates.trigger(trigger_entry["type"]))
+        set_existing(trigger, "id", ids.get("trigger", entry["name"], str(index)), kind)
+        for key, value in (trigger_entry.get("override") or {}).items():
+            set_existing(trigger, key, value, kind)
+        triggers.append(trigger)
+    return triggers
+
+
+def _replace_strings(node, mapping):
+    """In place: every string equal to a mapping key becomes its mapped value."""
+    entries = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()
+    for key, value in list(entries):
+        if isinstance(value, str):
+            if value in mapping:
+                node[key] = mapping[value]
+        else:
+            _replace_strings(value, mapping)
+
+
+def _remap_copy(action, name, ids, extra):
+    """Give a copied golden action fresh deterministic ids and re-point every reference to them."""
+    old_action_id = action["id"]
+    mapping = dict(extra)
+    for _, key, value in iter_nodes(action):
+        if key == "id" and isinstance(value, str) and GUID_RE.match(value) and value != NULL_GUID:
+            mapping[value] = ids.get("action", name) if value == old_action_id else ids.get("tpl", name, value)
+    _replace_strings(action, mapping)
+
+
+def _build_template_action(entry, manifest, templates, queue_ids, ids):
+    spec = manifest["templates"]
+    action = copy.deepcopy(templates.action(entry["template_action"]))
+    name = entry["name"]
+    extra = {}
+    golden_queue = action.get("queue")
+    if "queue" in entry and isinstance(golden_queue, str) and golden_queue != NULL_GUID:
+        extra[golden_queue] = queue_ids[entry["queue"]]
+    _remap_copy(action, name, ids, extra)
+    set_existing(action, "name", name, "action")
+    set_existing(action, "group", manifest["group"], "action")
+    set_existing(action, "queue", queue_ids[entry["queue"]] if "queue" in entry else NULL_GUID, "action")
+    overrides = entry.get("trigger_override") or {}
+    if overrides and not action.get("triggers"):
+        raise SbFormatError("manifest: action %s has trigger_override but the golden action has no trigger" % name)
+    for trigger in action.get("triggers") or []:
+        for key, value in overrides.items():
+            set_existing(trigger, key, value, "trigger:%s" % trigger.get("type"))
+    subs = action["subActions"]
+    next_index = max([s.get("index", -1) for s in subs if isinstance(s, dict)] + [-1]) + 1
+    for offset, sub_entry in enumerate(entry.get("append_subActions") or []):
+        if sub_entry["kind"] != "method":
+            raise SbFormatError("manifest: append_subActions supports only method entries (action %s)" % name)
+        subs.append(_method_sub(sub_entry, templates, spec, ids, next_index + offset, name))
+    return action
+
+
+def _dangling_golden_ids(model, templates):
+    golden_ids = {v for _, key, v in iter_nodes(templates.model) if key == "id" and isinstance(v, str)}
+    return [path for path, _, value in iter_nodes(model) if isinstance(value, str) and value in golden_ids]
 
 
 def build_model(manifest, templates, skipped=None):
@@ -737,7 +804,10 @@ def build_model(manifest, templates, skipped=None):
     for entry in manifest["actions"]:
         local = _Ids(manifest["namespace"], manifest["package"])
         try:
-            actions.append(_build_plain_action(entry, manifest, templates, queue_ids, local))
+            if "template_action" in entry:
+                actions.append(_build_template_action(entry, manifest, templates, queue_ids, local))
+            else:
+                actions.append(_build_plain_action(entry, manifest, templates, queue_ids, local))
         except MissingTemplateError as e:
             if not entry.get("optional"):
                 raise
@@ -747,6 +817,9 @@ def build_model(manifest, templates, skipped=None):
         ids.names.update(local.names)
     set_existing(model["data"], "queues", queues, "data")
     set_existing(model["data"], "actions", actions, "data")
+    dangling = _dangling_golden_ids(model, templates)
+    if dangling:
+        raise SbFormatError("dangling golden id at %s" % dangling[0])
     return model, dict(ids.names)
 
 
@@ -778,7 +851,10 @@ def _bc_roundtrip(model, json_bytes, manifest, templates, expected_ids):
 
 
 def _bc_model(model, json_bytes, manifest, templates, expected_ids):
-    rebuilt, _ = build_model(manifest, templates)
+    try:
+        rebuilt, _ = build_model(manifest, templates)
+    except SbFormatError as e:
+        return ["the manifest cannot be rebuilt: %s" % e]
     if model != rebuilt:
         return ["decoded model differs from the model built in memory"]
     return []
@@ -820,13 +896,168 @@ def _bc_no_bom(model, json_bytes, manifest, templates, expected_ids):
 
 
 def _bc_deterministic(model, json_bytes, manifest, templates, expected_ids):
-    first, _ = build_model(manifest, templates)
-    second, _ = build_model(manifest, templates)
+    try:
+        first, _ = build_model(manifest, templates)
+        second, _ = build_model(manifest, templates)
+    except SbFormatError as e:
+        return ["the manifest cannot be rebuilt: %s" % e]
     findings = []
     if pack(first) != pack(second):
         findings.append("two builds in memory pack to different bytes")
     if dump(second) != json_bytes:
         findings.append("a fresh build does not reproduce the decoded JSON of the written file")
+    return findings
+
+
+def _shallow_keys(obj, tpl, path, out):
+    """Record a finding unless obj has exactly the key names, in the same order, as tpl."""
+    if not isinstance(obj, dict):
+        out.append("%s is not an object" % path)
+        return False
+    if list(obj) != list(tpl):
+        out.append("%s has keys %s, golden has %s" % (path, list(obj), list(tpl)))
+        return False
+    return True
+
+
+def _deep_keys(obj, tpl, path, out, extra_template=None):
+    """Compare key lists recursively against a golden object (whole-action copies).
+
+    A subActions list may be longer than the golden's; its extra elements are compared
+    to extra_template (the Execute C# Method sub-action).
+    """
+    if isinstance(tpl, dict):
+        if not _shallow_keys(obj, tpl, path, out):
+            return
+        for key, value in tpl.items():
+            _deep_keys(obj[key], value, "%s.%s" % (path, key), out, extra_template)
+    elif isinstance(tpl, list):
+        if not isinstance(obj, list):
+            out.append("%s is not a list" % path)
+            return
+        for index, item in enumerate(obj):
+            where = "%s[%d]" % (path, index)
+            if index < len(tpl):
+                _deep_keys(item, tpl[index], where, out, extra_template)
+            elif extra_template is not None and path.endswith(".subActions"):
+                _shallow_keys(item, extra_template, where, out)
+            elif isinstance(item, dict):
+                out.append("%s has no golden counterpart" % where)
+        if len(obj) < len(tpl) and any(isinstance(t, dict) for t in tpl):
+            out.append("%s has %d elements, golden has %d" % (path, len(obj), len(tpl)))
+
+
+def _bc_keysets(model, json_bytes, manifest, templates, expected_ids):
+    findings = []
+    spec = manifest["templates"]
+    try:
+        sub_templates = {spec["code"]["type"]: templates.code(spec), spec["method"]["type"]: templates.method(spec)}
+        plain_action = templates.action(spec["action"])
+        queue_template = templates.queue(spec["queue"])
+    except MissingTemplateError as e:
+        return [str(e)]
+    golden = templates.model
+    _shallow_keys(model, golden, "$", findings)
+    for part in ("meta", "data"):
+        if isinstance(model.get(part), dict) and isinstance(golden.get(part), dict):
+            _shallow_keys(model[part], golden[part], "$." + part, findings)
+    data = model.get("data") if isinstance(model.get("data"), dict) else {}
+    for index, queue in enumerate(data.get("queues") or []):
+        _shallow_keys(queue, queue_template, "$.data.queues[%d]" % index, findings)
+    entries = {entry["name"]: entry for entry in manifest["actions"]}
+    for index, action in enumerate(data.get("actions") or []):
+        path = "$.data.actions[%d]" % index
+        entry = entries.get(action.get("name")) if isinstance(action, dict) else None
+        if entry is None:
+            findings.append("%s is not an action of the manifest" % path)
+        elif "template_action" in entry:
+            try:
+                golden_action = templates.action(entry["template_action"])
+                method_template = sub_templates[spec["method"]["type"]]
+            except MissingTemplateError as e:
+                findings.append(str(e))
+                continue
+            _deep_keys(action, golden_action, path, findings, method_template)
+        else:
+            _plain_action_keys(action, plain_action, sub_templates, templates, path, findings)
+    return findings
+
+
+def _plain_action_keys(action, plain_action, sub_templates, templates, path, findings):
+    if not _shallow_keys(action, plain_action, path, findings):
+        return
+    for index, trigger in enumerate(action.get("triggers") or []):
+        where = "%s.triggers[%d]" % (path, index)
+        try:
+            trigger_template = templates.trigger(trigger.get("type") if isinstance(trigger, dict) else None)
+        except MissingTemplateError as e:
+            findings.append("%s: %s" % (where, e))
+            continue
+        _shallow_keys(trigger, trigger_template, where, findings)
+
+    def walk(subs, where):
+        for index, sub in enumerate(subs or []):
+            here = "%s[%d]" % (where, index)
+            template = sub_templates.get(sub.get("type")) if isinstance(sub, dict) else None
+            if template is None:
+                findings.append("%s has no golden template for sub-action type %s" % (here, sub.get("type") if isinstance(sub, dict) else None))
+                continue
+            if _shallow_keys(sub, template, here, findings):
+                walk(sub.get("subActions"), here + ".subActions")
+
+    walk(action.get("subActions"), path + ".subActions")
+
+
+def _bc_ids(model, json_bytes, manifest, templates, expected_ids):
+    findings = []
+    emitted = [(path, value) for path, key, value in iter_nodes(model) if key == "id"]
+    seen = {}
+    for path, value in emitted:
+        if not isinstance(value, str) or not GUID_RE.match(value) or value == NULL_GUID:
+            findings.append("%s is not a lowercase non-null GUID" % path)
+        elif value in seen:
+            findings.append("%s duplicates the id at %s" % (path, seen[value]))
+        else:
+            seen[value] = path
+    for name, value in expected_ids.items():
+        if stable_id(manifest["namespace"], name) != value:
+            findings.append("expected id for %s is not uuid5(namespace, name)" % name)
+    wanted = set(expected_ids.values())
+    unexpected = [path for path, value in emitted if value not in wanted]
+    missing = wanted - {value for _, value in emitted}
+    if unexpected:
+        findings.append("%d id(s) are not derived from a stable name, first at %s" % (len(unexpected), unexpected[0]))
+    if missing:
+        findings.append("%d expected id(s) are absent from the output" % len(missing))
+    return findings
+
+
+def _bc_refs(model, json_bytes, manifest, templates, expected_ids):
+    prefix = "HARD check:refs-resolve "
+    findings = [line[len(prefix):] for line in structural_findings(model, json_bytes) if line.startswith(prefix)]
+    for path in _dangling_golden_ids(model, templates):
+        findings.append("dangling golden id at %s" % path)
+    return findings
+
+
+def _manifest_methods(manifest):
+    seen = []
+    for action in manifest["actions"]:
+        for sub in list(action.get("subActions") or []) + list(action.get("append_subActions") or []):
+            if sub.get("kind") == "method" and (sub["code"], sub["method"]) not in seen:
+                seen.append((sub["code"], sub["method"]))
+    return seen
+
+
+def _bc_methods_exist(model, json_bytes, manifest, templates, expected_ids):
+    findings = []
+    sources = {}
+    for code in manifest["codes"]:
+        sources[code["key"]] = (code["source"], source_path(code).read_text(encoding="utf-8-sig"))
+    for key, method in _manifest_methods(manifest):
+        source, text = sources[key]
+        if not re.search(r"public\s+bool\s+%s\s*\(\s*\)" % re.escape(method), text):
+            findings.append("method %s is not declared as 'public bool %s()' in %s" % (method, method, source))
     return findings
 
 
@@ -836,6 +1067,10 @@ _BUILD_CHECKS = (
     ("bytecode", _bc_bytecode),
     ("no-bom", _bc_no_bom),
     ("deterministic", _bc_deterministic),
+    ("keysets", _bc_keysets),
+    ("ids", _bc_ids),
+    ("refs", _bc_refs),
+    ("methods-exist", _bc_methods_exist),
 )
 
 

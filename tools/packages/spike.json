@@ -12,23 +12,12 @@
   "group": "DonationAlerts Spike",
   "templates": {
     "action": "GOLDEN | Runtime",
-    "code": {
-      "action": "GOLDEN | Runtime",
-      "type": 99999
-    },
-    "method": {
-      "action": "GOLDEN | Call",
-      "type": 99998,
-      "code_ref_key": "executeCodeId",
-      "method_key": "method"
-    },
+    "code": {"action": "GOLDEN | Runtime", "type": 99999},
+    "method": {"action": "GOLDEN | Call", "type": 99998, "code_ref_key": "executeCodeId", "method_key": "method"},
     "queue": "Golden Queue"
   },
   "queues": [
-    {
-      "key": "q",
-      "name": "DA Spike Queue"
-    }
+    {"key": "q", "name": "DA Spike Queue"}
   ],
   "codes": [
     {
@@ -66,6 +55,164 @@
       "subActions": [
         {"kind": "method", "code": "a", "method": "SpikeInfo"},
         {"kind": "method", "code": "b", "method": "SpikeBInfo"}
+      ]
+    },
+    {
+      "name": "SPIKE | Bg start",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeBgStart"}
+      ]
+    },
+    {
+      "name": "SPIKE | Bg stop",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeBgStop"}
+      ]
+    },
+    {
+      "name": "SPIKE | Listen HTTP",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeListenHttp"}
+      ]
+    },
+    {
+      "name": "SPIKE | Listen TCP",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeListenTcp"}
+      ]
+    },
+    {
+      "name": "SPIKE | Pending receive",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikePendingReceive"}
+      ]
+    },
+    {
+      "name": "SPIKE | Abort timing",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeAbortTiming"}
+      ]
+    },
+    {
+      "name": "SPIKE | Mode cancel",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeModeCancel"}
+      ]
+    },
+    {
+      "name": "SPIKE | Mode noop",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeModeNoop"}
+      ]
+    },
+    {
+      "name": "SPIKE | Block (repro)",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeBlockRepro"}
+      ]
+    },
+    {
+      "name": "SPIKE | Fire dict",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeFireDict"}
+      ]
+    },
+    {
+      "name": "SPIKE | Fire json",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeFireJson"}
+      ]
+    },
+    {
+      "name": "SPIKE | Fire from background",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeFireBackground"}
+      ]
+    },
+    {
+      "name": "SPIKE | Fire unregistered",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeFireUnregistered"}
+      ]
+    },
+    {
+      "name": "SPIKE | On event (dict)",
+      "template_action": "SPIKE | On event (dict)",
+      "queue": "q",
+      "trigger_override": {"eventName": "daSpikeDict", "name": "DA Spike: Dict"},
+      "append_subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeDumpArgs"}
+      ]
+    },
+    {
+      "name": "SPIKE | On event (json)",
+      "template_action": "SPIKE | On event (dict)",
+      "queue": "q",
+      "trigger_override": {"eventName": "daSpikeJson", "name": "DA Spike: Json"},
+      "append_subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeDumpArgs"}
+      ]
+    },
+    {
+      "name": "SPIKE | On event (unregistered)",
+      "template_action": "SPIKE | On event (dict)",
+      "queue": "q",
+      "trigger_override": {"eventName": "daSpikeNoReg", "name": "DA Spike: NoReg"},
+      "append_subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeDumpArgs"}
+      ]
+    },
+    {
+      "name": "SPIKE | On started",
+      "triggers": [
+        {"type": 706}
+      ],
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeOnStarted"}
+      ]
+    },
+    {
+      "name": "SPIKE | On exiting",
+      "optional": true,
+      "triggers": [
+        {"type": 707}
+      ],
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeOnExiting"}
+      ]
+    },
+    {
+      "name": "SPIKE | Own: sem try",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeOwnSemTry"},
+        {"kind": "method", "code": "b", "method": "SpikeBOwnSemTry"}
+      ]
+    },
+    {
+      "name": "SPIKE | Own: sem release",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeOwnSemRelease"},
+        {"kind": "method", "code": "b", "method": "SpikeBOwnSemRelease"}
+      ]
+    },
+    {
+      "name": "SPIKE | Own: gen claim/check",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeOwnGenClaim"},
+        {"kind": "method", "code": "b", "method": "SpikeBOwnGenCheck"}
+      ]
+    },
+    {
+      "name": "SPIKE | Own: static probe",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeOwnStatic"},
+        {"kind": "method", "code": "b", "method": "SpikeBOwnStatic"}
+      ]
+    },
+    {
+      "name": "SPIKE | Exec by name",
+      "subActions": [
+        {"kind": "method", "code": "a", "method": "SpikeExecByName"}
       ]
     }
   ]
