@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Dev-only offline compile gate. Never shipped inside a .sb and never required by Streamer.bot.
+    CcSource: absolute path of the one code sub-action source to compile (set by tools/compile_check.py).
+    CcLangVersion: optional C# language version override (default 7.3 until live finding F6).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <LangVersion Condition="'$(CcLangVersion)' == ''">7.3</LangVersion>
+    <LangVersion Condition="'$(CcLangVersion)' != ''">$(CcLangVersion)</LangVersion>
+    <DefineConstants>EXTERNAL_EDITOR</DefineConstants>
+    <NoWarn>CS0114</NoWarn>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Deterministic>true</Deterministic>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(CcSource)" />
+    <Compile Include="Stub\CphStub.cs" />
+    <Reference Include="System.Net.Http" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>
