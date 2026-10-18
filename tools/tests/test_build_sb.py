@@ -502,5 +502,293 @@ class AuditTests(unittest.TestCase):
         self.assertIn("--allow-prefix", out.getvalue())
 
 
+GOLDEN_PATH = build_sb.REPO_ROOT / "tools" / "golden" / "golden-1.0.7.sb"
+
+
+class BuildTests(unittest.TestCase):
+    """The builder against the real 1.0.7 golden and the real spike manifest."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.manifest = build_sb.load_manifest("spike")
+        cls.golden_model, cls.golden_json = build_sb.read_sb(GOLDEN_PATH)
+        cls.templates = build_sb.Templates(cls.golden_model)
+        cls.skipped = []
+        cls.model, cls.expected_ids = build_sb.build_model(cls.manifest, cls.templates, cls.skipped)
+        cls.json_bytes = build_sb.dump(cls.model)
+
+    def written(self):
+        """What read_sb returns for the written file: (model, decoded json bytes)."""
+        packed = build_sb.pack(self.model)
+        return build_sb.unpack(packed), build_sb.unpack_bytes(packed)
+
+    def verify(self, model, json_bytes, manifest=None):
+        return build_sb.verify_built(model, json_bytes, manifest or self.manifest, self.templates, self.expected_ids)
+
+    @staticmethod
+    def names(findings):
+        return {finding.split(":", 1)[0] for finding in findings}
+
+    def test_golden_fidelity_dump_reproduces_golden_json(self):
+        reparsed = json.loads(self.golden_json.decode("utf-8"))
+        self.assertEqual(build_sb.dump(reparsed), self.golden_json)
+
+    def test_golden_fidelity_numeric_tokens_keep_their_form(self):
+        self.assertIn(b'"weight": 0.0,', self.golden_json)
+        self.assertIn(b'"weight": 0.0,', self.json_bytes)
+        self.assertEqual(build_sb.unpack_bytes(build_sb.pack(self.golden_model)), self.golden_json)
+
+    def test_two_builds_pack_to_identical_bytes_and_ids(self):
+        model, ids = build_sb.build_model(self.manifest, self.templates)
+        self.assertEqual(build_sb.pack(model), build_sb.pack(self.model))
+        self.assertEqual(ids, self.expected_ids)
+
+    def test_ids_are_uuid5_of_the_stable_name(self):
+        namespace = self.manifest["namespace"]
+        info = next(a for a in self.model["data"]["actions"] if a["name"] == "SPIKE | Info")
+        self.assertEqual(info["id"], str(build_sb.uuid.uuid5(build_sb.uuid.UUID(namespace), "spike/action/SPIKE | Info")))
+        self.assertEqual(self.expected_ids["spike/code/a"], build_sb.stable_id(namespace, "spike", "code", "a"))
+        other = dict(self.manifest, namespace="00000000-0000-4000-8000-000000000001")
+        other_model, _ = build_sb.build_model(other, self.templates)
+        self.assertNotEqual(other_model["data"]["actions"][0]["id"], self.model["data"]["actions"][0]["id"])
+
+    def test_fresh_build_has_no_findings(self):
+        model, json_bytes = self.written()
+        self.assertEqual(self.verify(model, json_bytes), [])
+
+    def test_every_action_is_a_spike_action_and_exiting_is_skipped_only_when_golden_lacks_it(self):
+        actions = self.model["data"]["actions"]
+        self.assertTrue(all(a["name"].startswith("SPIKE |") for a in actions))
+        has_exiting = 707 in self.templates.triggers
+        self.assertEqual(len(actions), 26 if has_exiting else 25)
+        if not has_exiting:
+            self.assertEqual(self.skipped, ["SKIP SPIKE | On exiting: golden lacks trigger:707"])
+
+    def test_code_references_equal_the_golden_code_template(self):
+        template = self.templates.code(self.manifest["templates"])
+        subs = build_sb._code_subs(self.model, self.manifest)
+        self.assertEqual(len(subs), 2)
+        for sub in subs:
+            self.assertEqual(sub["references"], template["references"])
+
+    def test_embedded_sources_are_exactly_the_manifest_sources(self):
+        decoded = {sub["name"]: build_sb.decode_bytecode(sub["byteCode"]) for sub in build_sb._code_subs(self.model, self.manifest)}
+        wanted = {c["name"]: build_sb.normalize_source(build_sb.source_path(c)) for c in self.manifest["codes"]}
+        self.assertEqual(decoded, wanted)
+        for text in decoded.values():
+            self.assertNotIn("﻿", text)
+            self.assertNotIn("\n", text.replace("\r\n", ""))
+
+    def test_whole_action_copies_remap_every_golden_id_and_keep_parent_links(self):
+        golden_ids = {v for _, k, v in build_sb.iter_nodes(self.golden_model) if k == "id"}
+        emitted = {v for _, k, v in build_sb.iter_nodes(self.model) if k == "id"}
+        self.assertFalse(golden_ids & emitted)
+        copy_action = next(a for a in self.model["data"]["actions"] if a["name"] == "SPIKE | On event (json)")
+        if_sub = next(s for s in copy_action["subActions"] if s["type"] == 120)
+        for branch in if_sub["subActions"]:
+            for child in branch["subActions"]:
+                self.assertEqual(child["parentId"], branch["id"])
+        queue = self.model["data"]["queues"][0]
+        self.assertEqual(copy_action["queue"], queue["id"])
+
+    def test_appended_method_continues_the_golden_index_sequence(self):
+        copy_action = next(a for a in self.model["data"]["actions"] if a["name"] == "SPIKE | On event (dict)")
+        golden_action = self.templates.action("SPIKE | On event (dict)")
+        appended = copy_action["subActions"][-1]
+        self.assertEqual(appended["index"], len(golden_action["subActions"]))
+        self.assertEqual(appended["method"], "SpikeDumpArgs")
+
+    def test_normalize_source_strips_bom_and_unifies_line_endings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_file(tmp, "x.cs", b"\xef\xbb\xbfa\nb\r\nc\n")
+            self.assertEqual(build_sb.normalize_source(path), "a\r\nb\r\nc\r\n")
+
+    # Mutation tests: each defect must be reported under the check that owns it.
+
+    def test_mutation_flipped_byte_gives_roundtrip_finding(self):
+        model, json_bytes = self.written()
+        position = json_bytes.index(b"\r")
+        flipped = json_bytes[:position] + b" " + json_bytes[position + 1:]
+        self.assertEqual(len(flipped), len(json_bytes))
+        self.assertIn("roundtrip", self.names(self.verify(model, flipped)))
+
+    def test_mutation_changed_field_value_gives_model_finding(self):
+        model, json_bytes = self.written()
+        model["data"]["actions"][2]["name"] = "SPIKE | Info changed"
+        self.assertIn("model", self.names(self.verify(model, json_bytes)))
+
+    def test_mutation_written_file_differing_from_a_fresh_build_gives_deterministic_finding(self):
+        model, _ = self.written()
+        model["data"]["actions"][2]["name"] = "SPIKE | Info changed"
+        self.assertIn("deterministic", self.names(self.verify(model, build_sb.dump(model))))
+
+    def test_mutation_unstable_packing_gives_deterministic_finding(self):
+        model, json_bytes = self.written()
+        with mock.patch.object(build_sb, "pack", side_effect=[b"first", b"second"]):
+            findings = self.verify(model, json_bytes)
+        self.assertIn("deterministic", self.names(findings))
+
+    def test_mutation_duplicated_id_gives_ids_finding(self):
+        model, json_bytes = self.written()
+        model["data"]["actions"][1]["id"] = model["data"]["actions"][0]["id"]
+        self.assertIn("ids", self.names(self.verify(model, json_bytes)))
+
+    def test_mutation_changed_id_gives_ids_finding(self):
+        model, json_bytes = self.written()
+        model["data"]["actions"][0]["id"] = "99999999-9999-4999-8999-999999999999"
+        self.assertIn("ids", self.names(self.verify(model, json_bytes)))
+
+    def test_keyset_mutation_added_key_gives_keysets_finding_for_every_object_kind(self):
+        def action_with_key(model):
+            model["data"]["actions"][0]["bogus"] = 1
+
+        def trigger_with_key(model):
+            next(a for a in model["data"]["actions"] if a["name"] == "SPIKE | On started")["triggers"][0]["bogus"] = 1
+
+        def sub_with_key(model):
+            model["data"]["actions"][2]["subActions"][0]["bogus"] = 1
+
+        def queue_with_key(model):
+            model["data"]["queues"][0]["bogus"] = 1
+
+        def copied_nested_with_key(model):
+            copy_action = next(a for a in model["data"]["actions"] if a["name"] == "SPIKE | On event (dict)")
+            copy_action["subActions"][1]["subActions"][0]["subActions"][0]["bogus"] = 1
+
+        for mutate in (action_with_key, trigger_with_key, sub_with_key, queue_with_key, copied_nested_with_key):
+            with self.subTest(mutation=mutate.__name__):
+                model, json_bytes = self.written()
+                mutate(model)
+                self.assertIn("keysets", self.names(self.verify(model, json_bytes)))
+
+    def test_keyset_mutation_reordered_keys_gives_keysets_finding(self):
+        model, json_bytes = self.written()
+        action = model["data"]["actions"][0]
+        model["data"]["actions"][0] = dict(reversed(list(action.items())))
+        self.assertIn("keysets", self.names(self.verify(model, json_bytes)))
+
+    def test_misspelled_method_in_manifest_copy_gives_methods_exist_finding(self):
+        manifest = json.loads(json.dumps(self.manifest))
+        manifest["actions"][2]["subActions"][0]["method"] = "SpikeInfx"
+        model, json_bytes = self.written()
+        self.assertIn("methods-exist", self.names(self.verify(model, json_bytes, manifest)))
+
+    def test_mutation_changed_byte_code_gives_bytecode_finding(self):
+        model, json_bytes = self.written()
+        sub = build_sb._code_subs(model, self.manifest)[0]
+        sub["byteCode"] = build_sb.embed_source("class Other { }\r\n")
+        self.assertIn("bytecode", self.names(self.verify(model, json_bytes)))
+
+    def test_mutation_bom_in_byte_code_gives_no_bom_finding(self):
+        model, json_bytes = self.written()
+        sub = build_sb._code_subs(model, self.manifest)[0]
+        sub["byteCode"] = base64.b64encode(build_sb.BOM + build_sb.decode_bytecode(sub["byteCode"]).encode("utf-8")).decode("ascii")
+        self.assertIn("no-bom", self.names(self.verify(model, json_bytes)))
+
+    def test_mutation_dangling_reference_gives_refs_finding(self):
+        model, json_bytes = self.written()
+        model["data"]["actions"][2]["subActions"][0]["executeCodeId"] = "12345678-1234-4234-8234-123456789abc"
+        self.assertIn("refs", self.names(self.verify(model, json_bytes)))
+
+    def test_mutation_golden_id_left_in_output_gives_refs_finding(self):
+        model, json_bytes = self.written()
+        golden_id = self.golden_model["data"]["actions"][0]["id"]
+        model["data"]["actions"][2]["subActions"][0]["parentId"] = golden_id
+        self.assertIn("refs", self.names(self.verify(model, json_bytes)))
+
+    # Template handling.
+
+    def test_missing_template_kind_stops_the_build_and_names_the_kind(self):
+        golden = json.loads(json.dumps(self.golden_model))
+        for action in golden["data"]["actions"]:
+            action["triggers"] = [t for t in action["triggers"] if t["type"] != 706]
+        templates = build_sb.Templates(golden)
+        with self.assertRaises(build_sb.MissingTemplateError) as caught:
+            build_sb.build_model(self.manifest, templates)
+        self.assertEqual(caught.exception.kind, "trigger:706")
+        self.assertIn("trigger:706", str(caught.exception))
+        self.assertIn("RECIPE.md", str(caught.exception))
+
+    def test_only_optional_actions_are_skipped_when_a_template_kind_is_missing(self):
+        golden = json.loads(json.dumps(self.golden_model))
+        for action in golden["data"]["actions"]:
+            action["triggers"] = [t for t in action["triggers"] if t["type"] != 706]
+        manifest = json.loads(json.dumps(self.manifest))
+        next(a for a in manifest["actions"] if a["name"] == "SPIKE | On started")["optional"] = True
+        skipped = []
+        model, ids = build_sb.build_model(manifest, build_sb.Templates(golden), skipped)
+        self.assertIn("SKIP SPIKE | On started: golden lacks trigger:706", skipped)
+        self.assertNotIn("SPIKE | On started", [a["name"] for a in model["data"]["actions"]])
+        self.assertFalse([name for name in ids if "SPIKE | On started" in name])
+
+    def test_override_of_a_key_the_golden_template_lacks_is_refused(self):
+        manifest = json.loads(json.dumps(self.manifest))
+        next(a for a in manifest["actions"] if a["name"] == "SPIKE | On event (json)")["trigger_override"]["bogus"] = "x"
+        with self.assertRaises(build_sb.SbFormatError) as caught:
+            build_sb.build_model(manifest, self.templates)
+        self.assertIn("no invented fields", str(caught.exception))
+        with self.assertRaises(build_sb.SbFormatError):
+            build_sb.set_existing({"a": 1}, "b", 2, "action")
+
+    def test_manifest_source_outside_the_repository_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = write_file(tmp, "outside.cs", b"class X { }")
+            for source in ("../outside.cs", "../../../outside.cs", outside):
+                manifest = json.loads(json.dumps(self.manifest))
+                manifest["codes"][0]["source"] = source
+                with self.subTest(source=source):
+                    with self.assertRaises(build_sb.SbFormatError):
+                        build_sb.validate_manifest(manifest, "spike")
+
+    def test_manifest_with_unknown_action_key_or_duplicate_name_is_rejected(self):
+        for mutate in (
+            lambda m: m["actions"][0].update(bogus=1),
+            lambda m: m["actions"][1].update(name=m["actions"][0]["name"]),
+            lambda m: m["actions"][0]["subActions"].append({"kind": "code", "code": "a"}),
+            lambda m: m.update(namespace="not-a-uuid"),
+            lambda m: m.update(out="elsewhere/spike.sb"),
+        ):
+            manifest = json.loads(json.dumps(self.manifest))
+            mutate(manifest)
+            with self.assertRaises(build_sb.SbFormatError):
+                build_sb.validate_manifest(manifest, "spike")
+
+    def test_load_manifest_rejects_path_like_package_names(self):
+        for name in ("../spike", "spike/../spike", "", "Spike"):
+            with self.assertRaises(build_sb.SbFormatError):
+                build_sb.load_manifest(name)
+
+    # Command line.
+
+    def test_cli_build_check_writes_output_and_prints_every_pass_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "out", "spike.sb")
+            code, out, err = run_cli(["build", "spike", "--check", "--out", target])
+            self.assertEqual((code, err), (0, ""))
+            self.assertTrue(os.path.getsize(target) > 0)
+            self.assertEqual(build_sb.read_sb(target)[1], self.json_bytes)
+        for name in build_sb.BUILD_CHECK_NAMES:
+            self.assertIn("PASS build-check:%s\n" % name, out)
+        self.assertNotIn("FAIL", out)
+        self.assertRegex(out, r"built .+ actions=\d+ sha256-json=[0-9a-f]{64}")
+
+    def test_cli_build_with_a_golden_lacking_a_required_kind_exits_1_naming_the_kind(self):
+        golden = json.loads(json.dumps(self.golden_model))
+        for action in golden["data"]["actions"]:
+            action["triggers"] = [t for t in action["triggers"] if t["type"] != 706]
+        with tempfile.TemporaryDirectory() as tmp:
+            golden_file = write_file(tmp, "golden.sb", build_sb.pack(golden))
+            target = os.path.join(tmp, "spike.sb")
+            code, _, err = run_cli(["build", "spike", "--golden", golden_file, "--out", target])
+            self.assertEqual(code, 1)
+            self.assertIn("trigger:706", err)
+            self.assertFalse(os.path.exists(target))
+
+    def test_cli_build_unknown_package_exits_2(self):
+        code, _, err = run_cli(["build", "no-such-package"])
+        self.assertEqual(code, 2)
+        self.assertTrue(err.startswith("ERROR "))
+
+
 if __name__ == "__main__":
     unittest.main()
